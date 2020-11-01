@@ -15,7 +15,9 @@
                 "--push_rewards",
                 "--experience_replay",
                 "--explore_rate_decay",
-                "--save_visualizations"
+                "--save_visualizations",
+                "--grasp_only",
+                "--fast_mode"
             ]
         }
     ]
