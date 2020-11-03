@@ -262,7 +262,7 @@ def main(args):
 
                     # Get labels for sample and backpropagate
                     sample_best_pix_ind = (np.asarray(trainer.executed_action_log)[
-                                           sample_iteration, 1:4]).astype(int)
+                        sample_iteration, 1:4]).astype(int)
                     trainer.backprop(sample_color_heightmap, sample_depth_heightmap, sample_primitive_action,
                                      sample_best_pix_ind, trainer.label_value_log[sample_iteration])
 
@@ -284,7 +284,8 @@ def main(args):
             if not is_testing:
                 logger.save_backup_model(trainer.model, method)
                 if trainer.iteration % 50 == 0:
-                    logger.save_model(trainer.iteration, trainer.model, method)
+                    logger.save_model(trainer.iteration,
+                                      trainer.model, method)
                     if trainer.use_cuda:
                         trainer.model = trainer.model.cuda()
 
@@ -306,7 +307,6 @@ def main(args):
         prev_push_predictions = shared.push_predictions.copy()
         prev_grasp_predictions = shared.grasp_predictions.copy()
         prev_best_pix_ind = shared.best_pix_ind
-
         trainer.iteration += 1
         iteration_time_1 = time.time()
         print('Time elapsed: %f' % (iteration_time_1-iteration_time_0))
@@ -419,4 +419,7 @@ if __name__ == '__main__':
 
     # Run main program with specified arguments
     args = parser.parse_args()
-    main(args)
+    try:
+        main(args)
+    finally:
+        robot.stop_sim()

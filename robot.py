@@ -136,6 +136,57 @@ class Robot(object):
             self.cam_depth_scale = np.loadtxt(
                 'real/camera_depth_scale.txt', delimiter=' ')
 
+    def stop_sim(self):
+        if self.is_sim:
+            # Send goodbye message to V-REP in a blocking fashion:
+            vrep.simxAddStatusbarMessage(
+                self.sim_client, 'Goodbye V-REP!', vrep.simx_opmode_blocking)
+
+            # Stop simulation:
+            vrep.simxStopSimulation(self.sim_client, vrep.simx_opmode_blocking)
+
+            # Before closing the connection to V-REP, make sure that the last command sent out had time to arrive. This function is blocking.
+            vrep.simxGetPingTime(self.sim_client)
+
+            # Now close the connection to V-REP:
+            vrep.simxFinish(self.sim_client)
+
+    def restart_sim(self):
+
+        sim_ret, self.UR5_target_handle = vrep.simxGetObjectHandle(
+            self.sim_client, 'UR5_target', vrep.simx_opmode_blocking)
+        vrep.simxSetObjectPosition(
+            self.sim_client, self.UR5_target_handle, -1, (-0.5, 0, 0.3), vrep.simx_opmode_blocking)
+        vrep.simxStopSimulation(self.sim_client, vrep.simx_opmode_blocking)
+        vrep.simxStartSimulation(self.sim_client, vrep.simx_opmode_blocking)
+        time.sleep(1)
+        sim_ret, self.RG2_tip_handle = vrep.simxGetObjectHandle(
+            self.sim_client, 'UR5_tip', vrep.simx_opmode_blocking)
+        sim_ret, gripper_position = vrep.simxGetObjectPosition(
+            self.sim_client, self.RG2_tip_handle, -1, vrep.simx_opmode_blocking)
+        # V-REP bug requiring multiple starts and stops to restart
+        while gripper_position[2] > 0.4:
+            vrep.simxStopSimulation(self.sim_client, vrep.simx_opmode_blocking)
+            vrep.simxStartSimulation(
+                self.sim_client, vrep.simx_opmode_blocking)
+            # this sleeping time of 1s can also be disabled to speed things up in fast_mode
+            if not self.fast_mode:
+                time.sleep(1)
+            sim_ret, gripper_position = vrep.simxGetObjectPosition(
+                self.sim_client, self.RG2_tip_handle, -1, vrep.simx_opmode_blocking)
+
+    def check_sim(self):
+        # Check if simulation is stable by checking if gripper is within workspace
+        sim_ret, gripper_position = vrep.simxGetObjectPosition(
+            self.sim_client, self.RG2_tip_handle, -1, vrep.simx_opmode_blocking)
+        sim_ok = gripper_position[0] > self.workspace_limits[0][0] - 0.1 and gripper_position[0] < self.workspace_limits[0][1] + 0.1 and gripper_position[1] > self.workspace_limits[1][0] - \
+            0.1 and gripper_position[1] < self.workspace_limits[1][1] + \
+            0.1 and gripper_position[2] > self.workspace_limits[2][0] and gripper_position[2] < self.workspace_limits[2][1]
+        if not sim_ok:
+            print('Simulation unstable. Restarting environment.')
+            self.restart_sim()
+            self.add_objects()
+
     def setup_sim_camera(self):
 
         # Get handle to camera
@@ -163,8 +214,39 @@ class Robot(object):
         self.bg_color_img, self.bg_depth_img = self.get_camera_data()
         self.bg_depth_img = self.bg_depth_img * self.cam_depth_scale
 
-    def add_objects(self):
+    def get_camera_data(self):
+        if self.is_sim:
 
+            # Get color image from simulation
+            sim_ret, resolution, raw_image = vrep.simxGetVisionSensorImage(
+                self.sim_client, self.cam_handle, 0, vrep.simx_opmode_blocking)
+            color_img = np.asarray(raw_image)
+            color_img.shape = (resolution[1], resolution[0], 3)
+            color_img = color_img.astype(np.float)/255
+            color_img[color_img < 0] += 1
+            color_img *= 255
+            color_img = np.fliplr(color_img)
+            color_img = color_img.astype(np.uint8)
+
+            # Get depth image from simulation
+            sim_ret, resolution, depth_buffer = vrep.simxGetVisionSensorDepthBuffer(
+                self.sim_client, self.cam_handle, vrep.simx_opmode_blocking)
+            depth_img = np.asarray(depth_buffer)
+            depth_img.shape = (resolution[1], resolution[0])
+            depth_img = np.fliplr(depth_img)
+            zNear = 0.01
+            zFar = 10
+            depth_img = depth_img * (zFar - zNear) + zNear
+
+        else:
+            # Get color and depth image from ROS service
+            color_img, depth_img = self.camera.get_data()
+            # color_img = self.camera.color_data.copy()
+            # depth_img = self.camera.depth_data.copy()
+
+        return color_img, depth_img
+
+    def add_objects(self):
         # Add each object to robot workspace at x,y location and orientation (random or pre-loaded)
         self.object_handles = []
         sim_obj_handles = []
@@ -201,85 +283,29 @@ class Robot(object):
         self.prev_obj_positions = []
         self.obj_positions = []
 
-    def restart_sim(self):
+    def reposition_objects(self, workspace_limits):
 
-        sim_ret, self.UR5_target_handle = vrep.simxGetObjectHandle(
-            self.sim_client, 'UR5_target', vrep.simx_opmode_blocking)
-        vrep.simxSetObjectPosition(
-            self.sim_client, self.UR5_target_handle, -1, (-0.5, 0, 0.3), vrep.simx_opmode_blocking)
-        vrep.simxStopSimulation(self.sim_client, vrep.simx_opmode_blocking)
-        vrep.simxStartSimulation(self.sim_client, vrep.simx_opmode_blocking)
-        time.sleep(1)
-        sim_ret, self.RG2_tip_handle = vrep.simxGetObjectHandle(
-            self.sim_client, 'UR5_tip', vrep.simx_opmode_blocking)
-        sim_ret, gripper_position = vrep.simxGetObjectPosition(
-            self.sim_client, self.RG2_tip_handle, -1, vrep.simx_opmode_blocking)
-        # V-REP bug requiring multiple starts and stops to restart
-        while gripper_position[2] > 0.4:
-            vrep.simxStopSimulation(self.sim_client, vrep.simx_opmode_blocking)
-            vrep.simxStartSimulation(
-                self.sim_client, vrep.simx_opmode_blocking)
-            # this sleeping time of 1s can also be disabled to speed things up in fast_mode
-            if not self.fast_mode:
-                time.sleep(1)
-            sim_ret, gripper_position = vrep.simxGetObjectPosition(
-                self.sim_client, self.RG2_tip_handle, -1, vrep.simx_opmode_blocking)
+        # Move gripper out of the way
+        self.move_to([-0.1, 0, 0.3], None)
+        # sim_ret, UR5_target_handle = vrep.simxGetObjectHandle(self.sim_client,'UR5_target',vrep.simx_opmode_blocking)
+        # vrep.simxSetObjectPosition(self.sim_client, UR5_target_handle, -1, (-0.5,0,0.3), vrep.simx_opmode_blocking)
+        # time.sleep(1)
 
-    # Check if simulation is stable by checking if gripper is within workspace
-    def check_sim(self):
-        sim_ret, gripper_position = vrep.simxGetObjectPosition(
-            self.sim_client, self.RG2_tip_handle, -1, vrep.simx_opmode_blocking)
-        sim_ok = gripper_position[0] > self.workspace_limits[0][0] - 0.1 and gripper_position[0] < self.workspace_limits[0][1] + 0.1 and gripper_position[1] > self.workspace_limits[1][0] - \
-            0.1 and gripper_position[1] < self.workspace_limits[1][1] + \
-            0.1 and gripper_position[2] > self.workspace_limits[2][0] and gripper_position[2] < self.workspace_limits[2][1]
-        if not sim_ok:
-            print('Simulation unstable. Restarting environment.')
-            self.restart_sim()
-            self.add_objects()
+        for object_handle in self.object_handles:
 
-    def get_task_score(self):
-
-        key_positions = np.asarray([[-0.625, 0.125, 0.0],  # red
-                                    [-0.625, -0.125, 0.0],  # blue
-                                    [-0.375, 0.125, 0.0],  # green
-                                    [-0.375, -0.125, 0.0]])  # yellow
-
-        obj_positions = np.asarray(self.get_obj_positions())
-        obj_positions.shape = (
-            1, obj_positions.shape[0], obj_positions.shape[1])
-        obj_positions = np.tile(obj_positions, (key_positions.shape[0], 1, 1))
-
-        key_positions.shape = (
-            key_positions.shape[0], 1, key_positions.shape[1])
-        key_positions = np.tile(key_positions, (1, obj_positions.shape[1], 1))
-
-        key_dist = np.sqrt(
-            np.sum(np.power(obj_positions - key_positions, 2), axis=2))
-        key_nn_idx = np.argmin(key_dist, axis=0)
-
-        return np.sum(key_nn_idx == np.asarray(range(self.num_obj)) % 4)
-
-    def check_goal_reached(self):
-
-        goal_reached = self.get_task_score() == self.num_obj
-        return goal_reached
-
-    # def stop_sim(self):
-    #     if self.is_sim:
-    #         # Now send some data to V-REP in a non-blocking fashion:
-    #         # vrep.simxAddStatusbarMessage(sim_client,'Hello V-REP!',vrep.simx_opmode_oneshot)
-
-    #         # # Start the simulation
-    #         # vrep.simxStartSimulation(sim_client,vrep.simx_opmode_oneshot_wait)
-
-    #         # # Stop simulation:
-    #         # vrep.simxStopSimulation(sim_client,vrep.simx_opmode_oneshot_wait)
-
-    #         # Before closing the connection to V-REP, make sure that the last command sent out had time to arrive. You can guarantee this with (for example):
-    #         vrep.simxGetPingTime(self.sim_client)
-
-    #         # Now close the connection to V-REP:
-    #         vrep.simxFinish(self.sim_client)
+            # Drop object at random x,y location and random orientation in robot workspace
+            drop_x = (workspace_limits[0][1] - workspace_limits[0][0] - 0.2) * \
+                np.random.random_sample() + workspace_limits[0][0] + 0.1
+            drop_y = (workspace_limits[1][1] - workspace_limits[1][0] - 0.2) * \
+                np.random.random_sample() + workspace_limits[1][0] + 0.1
+            object_position = [drop_x, drop_y, 0.15]
+            object_orientation = [2*np.pi*np.random.random_sample(), 2*np.pi *
+                                  np.random.random_sample(), 2*np.pi*np.random.random_sample()]
+            vrep.simxSetObjectPosition(
+                self.sim_client, object_handle, -1, object_position, vrep.simx_opmode_blocking)
+            vrep.simxSetObjectOrientation(
+                self.sim_client, object_handle, -1, object_orientation, vrep.simx_opmode_blocking)
+            time.sleep(2)
 
     def get_obj_positions(self):
 
@@ -305,209 +331,35 @@ class Robot(object):
 
         return obj_positions, obj_orientations
 
-    def reposition_objects(self, workspace_limits):
+    def get_task_score(self):
 
-        # Move gripper out of the way
-        self.move_to([-0.1, 0, 0.3], None)
-        # sim_ret, UR5_target_handle = vrep.simxGetObjectHandle(self.sim_client,'UR5_target',vrep.simx_opmode_blocking)
-        # vrep.simxSetObjectPosition(self.sim_client, UR5_target_handle, -1, (-0.5,0,0.3), vrep.simx_opmode_blocking)
-        # time.sleep(1)
+        key_positions = np.asarray([[-0.625, 0.125, 0.0],  # red
+                                    [-0.625, -0.125, 0.0],  # blue
+                                    [-0.375, 0.125, 0.0],  # green
+                                    [-0.375, -0.125, 0.0]])  # yellow
 
-        for object_handle in self.object_handles:
+        obj_positions = np.asarray(self.get_obj_positions())
+        obj_positions.shape = (
+            1, obj_positions.shape[0], obj_positions.shape[1])
+        obj_positions = np.tile(obj_positions, (key_positions.shape[0], 1, 1))
 
-            # Drop object at random x,y location and random orientation in robot workspace
-            drop_x = (workspace_limits[0][1] - workspace_limits[0][0] - 0.2) * \
-                np.random.random_sample() + workspace_limits[0][0] + 0.1
-            drop_y = (workspace_limits[1][1] - workspace_limits[1][0] - 0.2) * \
-                np.random.random_sample() + workspace_limits[1][0] + 0.1
-            object_position = [drop_x, drop_y, 0.15]
-            object_orientation = [2*np.pi*np.random.random_sample(), 2*np.pi *
-                                  np.random.random_sample(), 2*np.pi*np.random.random_sample()]
-            vrep.simxSetObjectPosition(
-                self.sim_client, object_handle, -1, object_position, vrep.simx_opmode_blocking)
-            vrep.simxSetObjectOrientation(
-                self.sim_client, object_handle, -1, object_orientation, vrep.simx_opmode_blocking)
-            time.sleep(2)
+        key_positions.shape = (
+            key_positions.shape[0], 1, key_positions.shape[1])
+        key_positions = np.tile(key_positions, (1, obj_positions.shape[1], 1))
 
-    def get_camera_data(self):
+        key_dist = np.sqrt(
+            np.sum(np.power(obj_positions - key_positions, 2), axis=2))
+        key_nn_idx = np.argmin(key_dist, axis=0)
 
-        if self.is_sim:
+        return np.sum(key_nn_idx == np.asarray(range(self.num_obj)) % 4)
 
-            # Get color image from simulation
-            sim_ret, resolution, raw_image = vrep.simxGetVisionSensorImage(
-                self.sim_client, self.cam_handle, 0, vrep.simx_opmode_blocking)
-            color_img = np.asarray(raw_image)
-            color_img.shape = (resolution[1], resolution[0], 3)
-            color_img = color_img.astype(np.float)/255
-            color_img[color_img < 0] += 1
-            color_img *= 255
-            color_img = np.fliplr(color_img)
-            color_img = color_img.astype(np.uint8)
+    def check_goal_reached(self):
+        goal_reached = self.get_task_score() == self.num_obj
+        return goal_reached
 
-            # Get depth image from simulation
-            sim_ret, resolution, depth_buffer = vrep.simxGetVisionSensorDepthBuffer(
-                self.sim_client, self.cam_handle, vrep.simx_opmode_blocking)
-            depth_img = np.asarray(depth_buffer)
-            depth_img.shape = (resolution[1], resolution[0])
-            depth_img = np.fliplr(depth_img)
-            zNear = 0.01
-            zFar = 10
-            depth_img = depth_img * (zFar - zNear) + zNear
-
-        else:
-            # Get color and depth image from ROS service
-            color_img, depth_img = self.camera.get_data()
-            # color_img = self.camera.color_data.copy()
-            # depth_img = self.camera.depth_data.copy()
-
-        return color_img, depth_img
-
-    def parse_tcp_state_data(self, state_data, subpackage):
-
-        # Read package header
-        data_bytes = bytearray()
-        data_bytes.extend(state_data)
-        data_length = struct.unpack("!i", data_bytes[0:4])[0]
-        robot_message_type = data_bytes[4]
-        assert(robot_message_type == 16)
-        byte_idx = 5
-
-        # Parse sub-packages
-        subpackage_types = {
-            'joint_data': 1, 'cartesian_info': 4, 'force_mode_data': 7, 'tool_data': 2}
-        while byte_idx < data_length:
-            # package_length = int.from_bytes(data_bytes[byte_idx:(byte_idx+4)], byteorder='big', signed=False)
-            package_length = struct.unpack(
-                "!i", data_bytes[byte_idx:(byte_idx+4)])[0]
-            byte_idx += 4
-            package_idx = data_bytes[byte_idx]
-            if package_idx == subpackage_types[subpackage]:
-                byte_idx += 1
-                break
-            byte_idx += package_length - 4
-
-        def parse_joint_data(data_bytes, byte_idx):
-            actual_joint_positions = [0, 0, 0, 0, 0, 0]
-            target_joint_positions = [0, 0, 0, 0, 0, 0]
-            for joint_idx in range(6):
-                actual_joint_positions[joint_idx] = struct.unpack(
-                    '!d', data_bytes[(byte_idx+0):(byte_idx+8)])[0]
-                target_joint_positions[joint_idx] = struct.unpack(
-                    '!d', data_bytes[(byte_idx+8):(byte_idx+16)])[0]
-                byte_idx += 41
-            return actual_joint_positions
-
-        def parse_cartesian_info(data_bytes, byte_idx):
-            actual_tool_pose = [0, 0, 0, 0, 0, 0]
-            for pose_value_idx in range(6):
-                actual_tool_pose[pose_value_idx] = struct.unpack(
-                    '!d', data_bytes[(byte_idx+0):(byte_idx+8)])[0]
-                byte_idx += 8
-            return actual_tool_pose
-
-        def parse_tool_data(data_bytes, byte_idx):
-            byte_idx += 2
-            tool_analog_input2 = struct.unpack(
-                '!d', data_bytes[(byte_idx+0):(byte_idx+8)])[0]
-            return tool_analog_input2
-
-        parse_functions = {'joint_data': parse_joint_data,
-                           'cartesian_info': parse_cartesian_info, 'tool_data': parse_tool_data}
-        return parse_functions[subpackage](data_bytes, byte_idx)
-
-    def parse_rtc_state_data(self, state_data):
-
-        # Read package header
-        data_bytes = bytearray()
-        data_bytes.extend(state_data)
-        data_length = struct.unpack("!i", data_bytes[0:4])[0]
-        assert(data_length == 812)
-        byte_idx = 4 + 8 + 8*48 + 24 + 120
-        TCP_forces = [0, 0, 0, 0, 0, 0]
-        for joint_idx in range(6):
-            TCP_forces[joint_idx] = struct.unpack(
-                '!d', data_bytes[(byte_idx+0):(byte_idx+8)])[0]
-            byte_idx += 8
-
-        return TCP_forces
-
-    def close_gripper(self, asynch=False):
-
-        if self.is_sim:
-            gripper_motor_velocity = -0.5
-            if self.fast_mode:
-                gripper_motor_velocity = -1.5
-            gripper_motor_force = 100
-            sim_ret, RG2_gripper_handle = vrep.simxGetObjectHandle(
-                self.sim_client, 'RG2_openCloseJoint', vrep.simx_opmode_blocking)
-            sim_ret, gripper_joint_position = vrep.simxGetJointPosition(
-                self.sim_client, RG2_gripper_handle, vrep.simx_opmode_blocking)
-            vrep.simxSetJointForce(
-                self.sim_client, RG2_gripper_handle, gripper_motor_force, vrep.simx_opmode_blocking)
-            vrep.simxSetJointTargetVelocity(
-                self.sim_client, RG2_gripper_handle, gripper_motor_velocity, vrep.simx_opmode_blocking)
-            gripper_fully_closed = False
-            while gripper_joint_position > -0.045:  # Block until gripper is fully closed
-                sim_ret, new_gripper_joint_position = vrep.simxGetJointPosition(
-                    self.sim_client, RG2_gripper_handle, vrep.simx_opmode_blocking)
-                # print(gripper_joint_position)
-                if new_gripper_joint_position >= gripper_joint_position:
-                    return gripper_fully_closed
-                gripper_joint_position = new_gripper_joint_position
-            gripper_fully_closed = True
-
-        else:
-            self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.tcp_socket.connect((self.tcp_host_ip, self.tcp_port))
-            tcp_command = "set_digital_out(8,True)\n"
-            self.tcp_socket.send(str.encode(tcp_command))
-            self.tcp_socket.close()
-            if asynch:
-                gripper_fully_closed = True
-            else:
-                time.sleep(1.5)
-                gripper_fully_closed = self.check_grasp()
-
-        return gripper_fully_closed
-
-    def open_gripper(self, asynch=False):
-
-        if self.is_sim:
-            gripper_motor_velocity = 0.5
-            if self.fast_mode:
-                gripper_motor_velocity = 1.5
-            gripper_motor_force = 20
-            sim_ret, RG2_gripper_handle = vrep.simxGetObjectHandle(
-                self.sim_client, 'RG2_openCloseJoint', vrep.simx_opmode_blocking)
-            sim_ret, gripper_joint_position = vrep.simxGetJointPosition(
-                self.sim_client, RG2_gripper_handle, vrep.simx_opmode_blocking)
-            vrep.simxSetJointForce(
-                self.sim_client, RG2_gripper_handle, gripper_motor_force, vrep.simx_opmode_blocking)
-            vrep.simxSetJointTargetVelocity(
-                self.sim_client, RG2_gripper_handle, gripper_motor_velocity, vrep.simx_opmode_blocking)
-            while gripper_joint_position < 0.03:  # Block until gripper is fully open
-                sim_ret, gripper_joint_position = vrep.simxGetJointPosition(
-                    self.sim_client, RG2_gripper_handle, vrep.simx_opmode_blocking)
-
-        else:
-            self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.tcp_socket.connect((self.tcp_host_ip, self.tcp_port))
-            tcp_command = "set_digital_out(8,False)\n"
-            self.tcp_socket.send(str.encode(tcp_command))
-            self.tcp_socket.close()
-            if not asynch:
-                time.sleep(1.5)
-
-    def get_state(self):
-
-        self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.tcp_socket.connect((self.tcp_host_ip, self.tcp_port))
-        state_data = self.tcp_socket.recv(2048)
-        self.tcp_socket.close()
-        return state_data
-
-    # a fast-mode move_to function that is intended for is_sim mode.
+    # Minute actions --------------------------------------------------------
     def fast_move_to(self, tool_position):
+        # a fast-mode move_to function that is intended for is_sim mode.
         vrep.simxSetObjectPosition(self.sim_client, self.UR5_target_handle, -1,
                                    (tool_position[0], tool_position[1], tool_position[2]), vrep.simx_opmode_blocking)
 
@@ -555,114 +407,72 @@ class Robot(object):
                 time.sleep(0.01)
             self.tcp_socket.close()
 
-    def guarded_move_to(self, tool_position, tool_orientation):
+    def close_gripper(self, asynch=False):
+        if self.is_sim:
+            gripper_motor_velocity = -0.5
+            if self.fast_mode:
+                gripper_motor_velocity = -1.5
+            gripper_motor_force = 100
+            sim_ret, RG2_gripper_handle = vrep.simxGetObjectHandle(
+                self.sim_client, 'RG2_openCloseJoint', vrep.simx_opmode_blocking)
+            sim_ret, gripper_joint_position = vrep.simxGetJointPosition(
+                self.sim_client, RG2_gripper_handle, vrep.simx_opmode_blocking)
+            vrep.simxSetJointForce(
+                self.sim_client, RG2_gripper_handle, gripper_motor_force, vrep.simx_opmode_blocking)
+            vrep.simxSetJointTargetVelocity(
+                self.sim_client, RG2_gripper_handle, gripper_motor_velocity, vrep.simx_opmode_blocking)
+            gripper_fully_closed = False
+            while gripper_joint_position > -0.045:  # Block until gripper is fully closed
+                sim_ret, new_gripper_joint_position = vrep.simxGetJointPosition(
+                    self.sim_client, RG2_gripper_handle, vrep.simx_opmode_blocking)
+                # print(gripper_joint_position)
+                if new_gripper_joint_position >= gripper_joint_position:
+                    return gripper_fully_closed
+                gripper_joint_position = new_gripper_joint_position
+            gripper_fully_closed = True
 
-        self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.rtc_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-        self.tcp_socket.connect((self.tcp_host_ip, self.tcp_port))
-        self.rtc_socket.connect((self.rtc_host_ip, self.rtc_port))
-
-        # Read actual tool position
-        tcp_state_data = self.tcp_socket.recv(2048)
-        actual_tool_pose = self.parse_tcp_state_data(
-            tcp_state_data, 'cartesian_info')
-        execute_success = True
-
-        # Increment every cm, check force
-        self.tool_acc = 0.1  # 1.2 # 0.5
-
-        while not all([np.abs(actual_tool_pose[j] - tool_position[j]) < self.tool_pose_tolerance[j] for j in range(3)]):
-            # [min(np.abs(actual_tool_pose[j] - tool_orientation[j-3]), np.abs(np.abs(actual_tool_pose[j] - tool_orientation[j-3]) - np.pi*2)) < self.tool_pose_tolerance[j] for j in range(3,6)]
-
-            # Compute motion trajectory in 1cm increments
-            increment = np.asarray(
-                [(tool_position[j] - actual_tool_pose[j]) for j in range(3)])
-            if np.linalg.norm(increment) < 0.01:
-                increment_position = tool_position
-            else:
-                increment = 0.01*increment/np.linalg.norm(increment)
-                increment_position = np.asarray(
-                    actual_tool_pose[0:3]) + increment
-
-            # Move to next increment position (blocking call)
-            tcp_command = "movel(p[%f,%f,%f,%f,%f,%f],a=%f,v=%f,t=0,r=0)\n" % (increment_position[0], increment_position[1],
-                                                                               increment_position[2], tool_orientation[0], tool_orientation[1], tool_orientation[2], self.tool_acc, self.tool_vel)
+        else:
+            self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.tcp_socket.connect((self.tcp_host_ip, self.tcp_port))
+            tcp_command = "set_digital_out(8,True)\n"
             self.tcp_socket.send(str.encode(tcp_command))
+            self.tcp_socket.close()
+            if asynch:
+                gripper_fully_closed = True
+            else:
+                time.sleep(1.5)
+                gripper_fully_closed = self.check_grasp()
 
-            time_start = time.time()
-            tcp_state_data = self.tcp_socket.recv(2048)
-            actual_tool_pose = self.parse_tcp_state_data(
-                tcp_state_data, 'cartesian_info')
-            while not all([np.abs(actual_tool_pose[j] - increment_position[j]) < self.tool_pose_tolerance[j] for j in range(3)]):
-                # print([np.abs(actual_tool_pose[j] - increment_position[j]) for j in range(3)])
-                tcp_state_data = self.tcp_socket.recv(2048)
-                actual_tool_pose = self.parse_tcp_state_data(
-                    tcp_state_data, 'cartesian_info')
-                time_snapshot = time.time()
-                if time_snapshot - time_start > 1:
-                    break
-                time.sleep(0.01)
+        return gripper_fully_closed
 
-            # Reading TCP forces from real-time client connection
-            rtc_state_data = self.rtc_socket.recv(6496)
-            TCP_forces = self.parse_rtc_state_data(rtc_state_data)
+    def open_gripper(self, asynch=False):
+        if self.is_sim:
+            gripper_motor_velocity = 0.5
+            if self.fast_mode:
+                gripper_motor_velocity = 1.5
+            gripper_motor_force = 20
+            sim_ret, RG2_gripper_handle = vrep.simxGetObjectHandle(
+                self.sim_client, 'RG2_openCloseJoint', vrep.simx_opmode_blocking)
+            sim_ret, gripper_joint_position = vrep.simxGetJointPosition(
+                self.sim_client, RG2_gripper_handle, vrep.simx_opmode_blocking)
+            vrep.simxSetJointForce(
+                self.sim_client, RG2_gripper_handle, gripper_motor_force, vrep.simx_opmode_blocking)
+            vrep.simxSetJointTargetVelocity(
+                self.sim_client, RG2_gripper_handle, gripper_motor_velocity, vrep.simx_opmode_blocking)
+            while gripper_joint_position < 0.03:  # Block until gripper is fully open
+                sim_ret, gripper_joint_position = vrep.simxGetJointPosition(
+                    self.sim_client, RG2_gripper_handle, vrep.simx_opmode_blocking)
 
-            # If TCP forces in x/y exceed 20 Newtons, stop moving
-            # print(TCP_forces[0:3])
-            if np.linalg.norm(np.asarray(TCP_forces[0:2])) > 20 or (time_snapshot - time_start) > 1:
-                print('Warning: contact detected! Movement halted. TCP forces: [%f, %f, %f]' % (
-                    TCP_forces[0], TCP_forces[1], TCP_forces[2]))
-                execute_success = False
-                break
+        else:
+            self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.tcp_socket.connect((self.tcp_host_ip, self.tcp_port))
+            tcp_command = "set_digital_out(8,False)\n"
+            self.tcp_socket.send(str.encode(tcp_command))
+            self.tcp_socket.close()
+            if not asynch:
+                time.sleep(1.5)
 
-            time.sleep(0.01)
-
-        self.tool_acc = 1.2  # 1.2 # 0.5
-
-        self.tcp_socket.close()
-        self.rtc_socket.close()
-
-        return execute_success
-
-    def move_joints(self, joint_configuration):
-
-        self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.tcp_socket.connect((self.tcp_host_ip, self.tcp_port))
-        tcp_command = "movej([%f" % joint_configuration[0]
-        for joint_idx in range(1, 6):
-            tcp_command = tcp_command + \
-                (",%f" % joint_configuration[joint_idx])
-        tcp_command = tcp_command + \
-            "],a=%f,v=%f)\n" % (self.joint_acc, self.joint_vel)
-        self.tcp_socket.send(str.encode(tcp_command))
-
-        # Block until robot reaches home state
-        state_data = self.tcp_socket.recv(2048)
-        actual_joint_positions = self.parse_tcp_state_data(
-            state_data, 'joint_data')
-        while not all([np.abs(actual_joint_positions[j] - joint_configuration[j]) < self.joint_tolerance for j in range(6)]):
-            state_data = self.tcp_socket.recv(2048)
-            actual_joint_positions = self.parse_tcp_state_data(
-                state_data, 'joint_data')
-            time.sleep(0.01)
-
-        self.tcp_socket.close()
-
-    def go_home(self):
-
-        self.move_joints(self.home_joint_config)
-
-    # Note: must be preceded by close_gripper()
-
-    def check_grasp(self):
-
-        state_data = self.get_state()
-        tool_analog_input2 = self.parse_tcp_state_data(state_data, 'tool_data')
-        return tool_analog_input2 > 0.26
-
-    # Primitives ----------------------------------------------------------
-
+    # Primitives --------------------------------------------------------
     def grasp(self, position, heightmap_rotation_angle, workspace_limits):
         print('Executing: grasp at (%f, %f, %f)' %
               (position[0], position[1], position[2]))
@@ -1031,6 +841,7 @@ class Robot(object):
 
         return push_success
 
+    # Robotics only -----------------------------------------------------
     def restart_real(self):
 
         # Compute tool orientation from heightmap rotation angle
@@ -1117,6 +928,183 @@ class Robot(object):
             if tool_analog_input2 > 3.0 and (abs(new_tool_analog_input2 - tool_analog_input2) < 0.01) and all([np.abs(actual_tool_pose[j] - home_position[j]) < self.tool_pose_tolerance[j] for j in range(3)]):
                 break
             tool_analog_input2 = new_tool_analog_input2
+
+    def guarded_move_to(self, tool_position, tool_orientation):
+
+        self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.rtc_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+        self.tcp_socket.connect((self.tcp_host_ip, self.tcp_port))
+        self.rtc_socket.connect((self.rtc_host_ip, self.rtc_port))
+
+        # Read actual tool position
+        tcp_state_data = self.tcp_socket.recv(2048)
+        actual_tool_pose = self.parse_tcp_state_data(
+            tcp_state_data, 'cartesian_info')
+        execute_success = True
+
+        # Increment every cm, check force
+        self.tool_acc = 0.1  # 1.2 # 0.5
+
+        while not all([np.abs(actual_tool_pose[j] - tool_position[j]) < self.tool_pose_tolerance[j] for j in range(3)]):
+            # [min(np.abs(actual_tool_pose[j] - tool_orientation[j-3]), np.abs(np.abs(actual_tool_pose[j] - tool_orientation[j-3]) - np.pi*2)) < self.tool_pose_tolerance[j] for j in range(3,6)]
+
+            # Compute motion trajectory in 1cm increments
+            increment = np.asarray(
+                [(tool_position[j] - actual_tool_pose[j]) for j in range(3)])
+            if np.linalg.norm(increment) < 0.01:
+                increment_position = tool_position
+            else:
+                increment = 0.01*increment/np.linalg.norm(increment)
+                increment_position = np.asarray(
+                    actual_tool_pose[0:3]) + increment
+
+            # Move to next increment position (blocking call)
+            tcp_command = "movel(p[%f,%f,%f,%f,%f,%f],a=%f,v=%f,t=0,r=0)\n" % (increment_position[0], increment_position[1],
+                                                                               increment_position[2], tool_orientation[0], tool_orientation[1], tool_orientation[2], self.tool_acc, self.tool_vel)
+            self.tcp_socket.send(str.encode(tcp_command))
+
+            time_start = time.time()
+            tcp_state_data = self.tcp_socket.recv(2048)
+            actual_tool_pose = self.parse_tcp_state_data(
+                tcp_state_data, 'cartesian_info')
+            while not all([np.abs(actual_tool_pose[j] - increment_position[j]) < self.tool_pose_tolerance[j] for j in range(3)]):
+                # print([np.abs(actual_tool_pose[j] - increment_position[j]) for j in range(3)])
+                tcp_state_data = self.tcp_socket.recv(2048)
+                actual_tool_pose = self.parse_tcp_state_data(
+                    tcp_state_data, 'cartesian_info')
+                time_snapshot = time.time()
+                if time_snapshot - time_start > 1:
+                    break
+                time.sleep(0.01)
+
+            # Reading TCP forces from real-time client connection
+            rtc_state_data = self.rtc_socket.recv(6496)
+            TCP_forces = self.parse_rtc_state_data(rtc_state_data)
+
+            # If TCP forces in x/y exceed 20 Newtons, stop moving
+            # print(TCP_forces[0:3])
+            if np.linalg.norm(np.asarray(TCP_forces[0:2])) > 20 or (time_snapshot - time_start) > 1:
+                print('Warning: contact detected! Movement halted. TCP forces: [%f, %f, %f]' % (
+                    TCP_forces[0], TCP_forces[1], TCP_forces[2]))
+                execute_success = False
+                break
+
+            time.sleep(0.01)
+
+        self.tool_acc = 1.2  # 1.2 # 0.5
+
+        self.tcp_socket.close()
+        self.rtc_socket.close()
+
+        return execute_success
+
+    def move_joints(self, joint_configuration):
+        self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.tcp_socket.connect((self.tcp_host_ip, self.tcp_port))
+        tcp_command = "movej([%f" % joint_configuration[0]
+        for joint_idx in range(1, 6):
+            tcp_command = tcp_command + \
+                (",%f" % joint_configuration[joint_idx])
+        tcp_command = tcp_command + \
+            "],a=%f,v=%f)\n" % (self.joint_acc, self.joint_vel)
+        self.tcp_socket.send(str.encode(tcp_command))
+
+        # Block until robot reaches home state
+        state_data = self.tcp_socket.recv(2048)
+        actual_joint_positions = self.parse_tcp_state_data(
+            state_data, 'joint_data')
+        while not all([np.abs(actual_joint_positions[j] - joint_configuration[j]) < self.joint_tolerance for j in range(6)]):
+            state_data = self.tcp_socket.recv(2048)
+            actual_joint_positions = self.parse_tcp_state_data(
+                state_data, 'joint_data')
+            time.sleep(0.01)
+
+        self.tcp_socket.close()
+
+    def go_home(self):
+
+        self.move_joints(self.home_joint_config)
+
+    def check_grasp(self):
+        # Note: must be preceded by close_gripper()
+        state_data = self.get_state()
+        tool_analog_input2 = self.parse_tcp_state_data(state_data, 'tool_data')
+        return tool_analog_input2 > 0.26
+
+    def get_state(self):
+        self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.tcp_socket.connect((self.tcp_host_ip, self.tcp_port))
+        state_data = self.tcp_socket.recv(2048)
+        self.tcp_socket.close()
+        return state_data
+
+    def parse_tcp_state_data(self, state_data, subpackage):
+        # Read package header
+        data_bytes = bytearray()
+        data_bytes.extend(state_data)
+        data_length = struct.unpack("!i", data_bytes[0:4])[0]
+        robot_message_type = data_bytes[4]
+        assert(robot_message_type == 16)
+        byte_idx = 5
+
+        # Parse sub-packages
+        subpackage_types = {
+            'joint_data': 1, 'cartesian_info': 4, 'force_mode_data': 7, 'tool_data': 2}
+        while byte_idx < data_length:
+            # package_length = int.from_bytes(data_bytes[byte_idx:(byte_idx+4)], byteorder='big', signed=False)
+            package_length = struct.unpack(
+                "!i", data_bytes[byte_idx:(byte_idx+4)])[0]
+            byte_idx += 4
+            package_idx = data_bytes[byte_idx]
+            if package_idx == subpackage_types[subpackage]:
+                byte_idx += 1
+                break
+            byte_idx += package_length - 4
+
+        def parse_joint_data(data_bytes, byte_idx):
+            actual_joint_positions = [0, 0, 0, 0, 0, 0]
+            target_joint_positions = [0, 0, 0, 0, 0, 0]
+            for joint_idx in range(6):
+                actual_joint_positions[joint_idx] = struct.unpack(
+                    '!d', data_bytes[(byte_idx+0):(byte_idx+8)])[0]
+                target_joint_positions[joint_idx] = struct.unpack(
+                    '!d', data_bytes[(byte_idx+8):(byte_idx+16)])[0]
+                byte_idx += 41
+            return actual_joint_positions
+
+        def parse_cartesian_info(data_bytes, byte_idx):
+            actual_tool_pose = [0, 0, 0, 0, 0, 0]
+            for pose_value_idx in range(6):
+                actual_tool_pose[pose_value_idx] = struct.unpack(
+                    '!d', data_bytes[(byte_idx+0):(byte_idx+8)])[0]
+                byte_idx += 8
+            return actual_tool_pose
+
+        def parse_tool_data(data_bytes, byte_idx):
+            byte_idx += 2
+            tool_analog_input2 = struct.unpack(
+                '!d', data_bytes[(byte_idx+0):(byte_idx+8)])[0]
+            return tool_analog_input2
+
+        parse_functions = {'joint_data': parse_joint_data,
+                           'cartesian_info': parse_cartesian_info, 'tool_data': parse_tool_data}
+        return parse_functions[subpackage](data_bytes, byte_idx)
+
+    def parse_rtc_state_data(self, state_data):
+        # Read package header
+        data_bytes = bytearray()
+        data_bytes.extend(state_data)
+        data_length = struct.unpack("!i", data_bytes[0:4])[0]
+        assert(data_length == 812)
+        byte_idx = 4 + 8 + 8*48 + 24 + 120
+        TCP_forces = [0, 0, 0, 0, 0, 0]
+        for joint_idx in range(6):
+            TCP_forces[joint_idx] = struct.unpack(
+                '!d', data_bytes[(byte_idx+0):(byte_idx+8)])[0]
+            byte_idx += 8
+
+        return TCP_forces
 
     # def place(self, position, orientation, workspace_limits):
     #     print('Executing: place at (%f, %f, %f)' % (position[0], position[1], position[2]))
