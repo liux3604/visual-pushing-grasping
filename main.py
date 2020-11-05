@@ -25,6 +25,8 @@ def main(args):
     is_sim = args.is_sim
     # Directory containing 3D mesh files (.obj) for simulation
     obj_mesh_dir = os.path.abspath(args.obj_mesh_dir) if is_sim else None
+    obj_model_dir = os.path.abspath(args.obj_model_dir) if is_sim else None
+
     # Number of objects to add to simulation
     num_obj = args.num_obj if is_sim else None
     # IP and port to robot arm as TCP client (UR5)
@@ -45,6 +47,7 @@ def main(args):
     random_seed = args.random_seed
     force_cpu = args.force_cpu
     fast_mode = args.fast_mode
+    load_models = args.load_models
 
     # ------------- Algorithm options -------------
     # 'reactive' (supervised learning) or 'reinforcement' (Q-learning)
@@ -81,7 +84,7 @@ def main(args):
     np.random.seed(random_seed)
 
     global robot
-    robot = Robot(is_sim, obj_mesh_dir, num_obj, args.workspace_limits,
+    robot = Robot(is_sim, obj_mesh_dir, obj_model_dir, load_models, num_obj, args.workspace_limits,
                   tcp_host_ip, tcp_port, rtc_host_ip, rtc_port,
                   is_testing, test_preset_cases, test_preset_file, fast_mode)
     global trainer
@@ -360,6 +363,8 @@ if __name__ == '__main__':
                         default=False, help='run in simulation?')
     parser.add_argument('--obj_mesh_dir', dest='obj_mesh_dir', action='store', default='objects/blocks',
                         help='directory containing 3D mesh files (.obj) of objects to be added to simulation')
+    parser.add_argument('--obj_model_dir', dest='obj_model_dir', action='store', default='objects/models',
+                        help='directory containing 3D model files (.ttm) of objects to be added to simulation')
     parser.add_argument('--num_obj', dest='num_obj', type=int, action='store',
                         default=10, help='number of objects to add to simulation')
     parser.add_argument('--tcp_host_ip', dest='tcp_host_ip', action='store',
@@ -416,7 +421,8 @@ if __name__ == '__main__':
                         action='store_true', default=False, help='save visualizations of FCN predictions?')
     parser.add_argument('--fast_mode', dest='fast_mode', action='store_true',
                         default=False, help='speed up the training by turning of unncessary animations')
-
+    parser.add_argument('--load_models', dest='load_models', action='store_true',
+                        default=False, help='load dynamic model files instead of mesh')
     # Run main program with specified arguments
     args = parser.parse_args()
     try:

@@ -16,8 +16,13 @@
                 "--experience_replay",
                 "--explore_rate_decay",
                 "--save_visualizations",
-                // "--grasp_only",
-                "--fast_mode"
+                "--num_obj",
+                "4",
+                "--grasp_only",
+                "--load_models",
+                "--load_snapshot",
+                "--snapshot_file",
+                "downloads/snapshot-009150.reinforcement.pth"
             ]
         }
     ]

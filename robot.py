@@ -9,7 +9,7 @@ from simulation import vrep
 
 
 class Robot(object):
-    def __init__(self, is_sim, obj_mesh_dir, num_obj, workspace_limits,
+    def __init__(self, is_sim, obj_mesh_dir, obj_model_dir, load_models, num_obj, workspace_limits,
                  tcp_host_ip, tcp_port, rtc_host_ip, rtc_port,
                  is_testing, test_preset_cases, test_preset_file, fast_mode):
 
@@ -33,8 +33,14 @@ class Robot(object):
 
             # Read files in object mesh directory
             self.obj_mesh_dir = obj_mesh_dir
+            self.obj_model_dir = obj_model_dir
             self.num_obj = num_obj
-            self.mesh_list = os.listdir(self.obj_mesh_dir)
+            self.load_models = load_models
+            if self.load_models:
+                self.mesh_list = os.listdir(self.obj_model_dir)
+                self.obj_mesh_dir = self.obj_model_dir
+            else:
+                self.mesh_list = os.listdir(self.obj_mesh_dir)
 
             # Randomly choose objects to add to scene
             self.obj_mesh_ind = np.random.randint(
@@ -152,7 +158,6 @@ class Robot(object):
             vrep.simxFinish(self.sim_client)
 
     def restart_sim(self):
-
         sim_ret, self.UR5_target_handle = vrep.simxGetObjectHandle(
             self.sim_client, 'UR5_target', vrep.simx_opmode_blocking)
         vrep.simxSetObjectPosition(
@@ -177,18 +182,23 @@ class Robot(object):
 
     def check_sim(self):
         # Check if simulation is stable by checking if gripper is within workspace
+        sim_ret, self.UR5_joint3_handle = vrep.simxGetObjectHandle(
+            self.sim_client, 'UR5_joint3', vrep.simx_opmode_blocking)
+        sim_ret, UR5_joint3_handle_position = vrep.simxGetObjectPosition(
+            self.sim_client, self.UR5_joint3_handle, -1, vrep.simx_opmode_blocking)
         sim_ret, gripper_position = vrep.simxGetObjectPosition(
             self.sim_client, self.RG2_tip_handle, -1, vrep.simx_opmode_blocking)
         sim_ok = gripper_position[0] > self.workspace_limits[0][0] - 0.1 and gripper_position[0] < self.workspace_limits[0][1] + 0.1 and gripper_position[1] > self.workspace_limits[1][0] - \
             0.1 and gripper_position[1] < self.workspace_limits[1][1] + \
-            0.1 and gripper_position[2] > self.workspace_limits[2][0] and gripper_position[2] < self.workspace_limits[2][1]
+            0.1 and gripper_position[2] > self.workspace_limits[2][0] and gripper_position[
+                2] < self.workspace_limits[2][1] and UR5_joint3_handle_position[2] > 0.15
+
         if not sim_ok:
             print('Simulation unstable. Restarting environment.')
             self.restart_sim()
             self.add_objects()
 
     def setup_sim_camera(self):
-
         # Get handle to camera
         sim_ret, self.cam_handle = vrep.simxGetObjectHandle(
             self.sim_client, 'Vision_sensor_persp', vrep.simx_opmode_blocking)
@@ -249,7 +259,6 @@ class Robot(object):
     def add_objects(self):
         # Add each object to robot workspace at x,y location and orientation (random or pre-loaded)
         self.object_handles = []
-        sim_obj_handles = []
         for object_idx in range(len(self.obj_mesh_ind)):
             curr_mesh_file = os.path.join(
                 self.obj_mesh_dir, self.mesh_list[self.obj_mesh_ind[object_idx]])
@@ -270,18 +279,22 @@ class Robot(object):
                                       self.test_obj_orientations[object_idx][1], self.test_obj_orientations[object_idx][2]]
             object_color = [self.obj_mesh_color[object_idx][0],
                             self.obj_mesh_color[object_idx][1], self.obj_mesh_color[object_idx][2]]
-            ret_resp, ret_ints, ret_floats, ret_strings, ret_buffer = vrep.simxCallScriptFunction(self.sim_client, 'remoteApiCommandServer', vrep.sim_scripttype_childscript, 'importShape', [
-                                                                                                  0, 0, 255, 0], object_position + object_orientation + object_color, [curr_mesh_file, curr_shape_name], bytearray(), vrep.simx_opmode_blocking)
+
+            if not self.load_models:
+                ret_resp, ret_ints, ret_floats, ret_strings, ret_buffer = vrep.simxCallScriptFunction(self.sim_client, 'remoteApiCommandServer', vrep.sim_scripttype_childscript, 'importShape', [
+                    0, 0, 255, 0], object_position + object_orientation + object_color, [curr_mesh_file, curr_shape_name], bytearray(), vrep.simx_opmode_blocking)
+            else:
+                ret_resp, ret_ints, ret_floats, ret_strings, ret_buffer = vrep.simxCallScriptFunction(self.sim_client, 'remoteApiCommandServer', vrep.sim_scripttype_childscript, 'importModel', [
+                    0, 0, 255, 0], object_position + object_orientation + object_color, [curr_mesh_file, curr_shape_name], bytearray(), vrep.simx_opmode_blocking)
+
             if ret_resp == 8:
-                print('Failed to add new objects to simulation. Please restart.')
+                print('Failed to add new objects to simulation. Please restart')
                 exit()
             curr_shape_handle = ret_ints[0]
             self.object_handles.append(curr_shape_handle)
             # this waiting time is disabled in fast_mode
             if (not self.fast_mode) and (not (self.is_testing and self.test_preset_cases)):
                 time.sleep(2)
-        self.prev_obj_positions = []
-        self.obj_positions = []
 
     def reposition_objects(self, workspace_limits):
 
@@ -363,6 +376,31 @@ class Robot(object):
         vrep.simxSetObjectPosition(self.sim_client, self.UR5_target_handle, -1,
                                    (tool_position[0], tool_position[1], tool_position[2]), vrep.simx_opmode_blocking)
 
+    def move_to_in_time(self, tool_position, time_interval):
+        ''' Currently enabled only for is_sim mode.
+            Move to position tool_position in time_interval seconds
+        '''
+        if self.is_sim:
+            # Each move_to action takes 2.5 seconds. 1/speed_factor*0.05s = time_interval. 0.05s is the default time step dt in simulator.
+            speed_factor = 0.05/time_interval
+            sim_ret, UR5_target_position = vrep.simxGetObjectPosition(
+                self.sim_client, self.UR5_target_handle, -1, vrep.simx_opmode_blocking)
+
+            move_direction = np.asarray([tool_position[0] - UR5_target_position[0], tool_position[1] -
+                                         UR5_target_position[1], tool_position[2] - UR5_target_position[2]])
+            move_magnitude = np.linalg.norm(move_direction)
+            move_step = speed_factor*move_direction/move_magnitude
+            num_move_steps = int(np.floor(move_magnitude/speed_factor))
+
+            for step_iter in range(num_move_steps):
+                vrep.simxSetObjectPosition(self.sim_client, self.UR5_target_handle, -1, (
+                    UR5_target_position[0] + move_step[0], UR5_target_position[1] + move_step[1], UR5_target_position[2] + move_step[2]), vrep.simx_opmode_blocking)
+                sim_ret, UR5_target_position = vrep.simxGetObjectPosition(
+                    self.sim_client, self.UR5_target_handle, -1, vrep.simx_opmode_blocking)
+
+            vrep.simxSetObjectPosition(self.sim_client, self.UR5_target_handle, -1,
+                                       (tool_position[0], tool_position[1], tool_position[2]), vrep.simx_opmode_blocking)
+
     def move_to(self, tool_position, tool_orientation):
 
         if self.is_sim:
@@ -407,11 +445,54 @@ class Robot(object):
                 time.sleep(0.01)
             self.tcp_socket.close()
 
+    # Reward judging actions --------------------------------------------
+    def shake(self, direction):
+        '''
+        direction: 0, 1, 2 for X, Y, Z direction respectively
+        '''
+        sim_ret, UR5_target_position = vrep.simxGetObjectPosition(
+            self.sim_client, self.UR5_target_handle, -1, vrep.simx_opmode_blocking)
+        # Move it to 0.3, a relative high position before shaking
+        raised_above_grasp_target = (
+            UR5_target_position[0], UR5_target_position[1], 0.3)
+        self.move_to(raised_above_grasp_target, None)
+
+        if direction == 0:
+            newpos1 = (
+                raised_above_grasp_target[0] - 0.09, raised_above_grasp_target[1], raised_above_grasp_target[2])
+            newpos2 = (
+                raised_above_grasp_target[0] + 0.09, raised_above_grasp_target[1], raised_above_grasp_target[2])
+        elif direction == 1:
+            newpos1 = (
+                raised_above_grasp_target[0], raised_above_grasp_target[1] - 0.09, raised_above_grasp_target[2])
+            newpos2 = (
+                raised_above_grasp_target[0], raised_above_grasp_target[1] + 0.09, raised_above_grasp_target[2])
+        elif direction == 2:
+            newpos1 = (
+                raised_above_grasp_target[0], raised_above_grasp_target[1], raised_above_grasp_target[2] - 0.09)
+            newpos2 = (
+                raised_above_grasp_target[0], raised_above_grasp_target[1], raised_above_grasp_target[2] + 0.09)
+
+        self.move_to_in_time(newpos1, 1)
+        self.move_to_in_time(newpos2, 1)
+        self.move_to_in_time(raised_above_grasp_target, 1)
+
+    def is_gripper_closed(self):
+        if self.is_sim:
+            sim_ret, RG2_gripper_handle = vrep.simxGetObjectHandle(
+                self.sim_client, 'RG2_openCloseJoint', vrep.simx_opmode_blocking)
+            sim_ret, gripper_joint_position = vrep.simxGetJointPosition(
+                self.sim_client, RG2_gripper_handle, vrep.simx_opmode_blocking)
+            return gripper_joint_position <= -0.045
+
     def close_gripper(self, asynch=False):
+        ''' Caveate: when gripper is open, calling this function returns false;
+            when gripper is already closed, calling this function return true;
+        '''
         if self.is_sim:
             gripper_motor_velocity = -0.5
-            if self.fast_mode:
-                gripper_motor_velocity = -1.5
+            # if self.fast_mode:
+            #    gripper_motor_velocity = -1.5
             gripper_motor_force = 100
             sim_ret, RG2_gripper_handle = vrep.simxGetObjectHandle(
                 self.sim_client, 'RG2_openCloseJoint', vrep.simx_opmode_blocking)
@@ -422,7 +503,8 @@ class Robot(object):
             vrep.simxSetJointTargetVelocity(
                 self.sim_client, RG2_gripper_handle, gripper_motor_velocity, vrep.simx_opmode_blocking)
             gripper_fully_closed = False
-            while gripper_joint_position > -0.045:  # Block until gripper is fully closed
+            while gripper_joint_position > -0.045:
+                # Block until gripper is fully closed
                 sim_ret, new_gripper_joint_position = vrep.simxGetJointPosition(
                     self.sim_client, RG2_gripper_handle, vrep.simx_opmode_blocking)
                 # print(gripper_joint_position)
@@ -448,8 +530,8 @@ class Robot(object):
     def open_gripper(self, asynch=False):
         if self.is_sim:
             gripper_motor_velocity = 0.5
-            if self.fast_mode:
-                gripper_motor_velocity = 1.5
+            # if self.fast_mode:
+            #    gripper_motor_velocity = 1.5
             gripper_motor_force = 20
             sim_ret, RG2_gripper_handle = vrep.simxGetObjectHandle(
                 self.sim_client, 'RG2_openCloseJoint', vrep.simx_opmode_blocking)
@@ -459,7 +541,8 @@ class Robot(object):
                 self.sim_client, RG2_gripper_handle, gripper_motor_force, vrep.simx_opmode_blocking)
             vrep.simxSetJointTargetVelocity(
                 self.sim_client, RG2_gripper_handle, gripper_motor_velocity, vrep.simx_opmode_blocking)
-            while gripper_joint_position < 0.03:  # Block until gripper is fully open
+            while gripper_joint_position < 0.03:
+                # Block until gripper is fully open
                 sim_ret, gripper_joint_position = vrep.simxGetJointPosition(
                     self.sim_client, RG2_gripper_handle, vrep.simx_opmode_blocking)
 
@@ -473,7 +556,7 @@ class Robot(object):
                 time.sleep(1.5)
 
     # Primitives --------------------------------------------------------
-    def grasp(self, position, heightmap_rotation_angle, workspace_limits):
+    def grasp(self, position, heightmap_rotation_angle, workspace_limits, raise_height=0.15):
         print('Executing: grasp at (%f, %f, %f)' %
               (position[0], position[1], position[2]))
 
@@ -532,11 +615,24 @@ class Robot(object):
 
             # Close gripper to grasp target
             gripper_full_closed = self.close_gripper()
+            # Calling close_gripper() for the second time to check whether it is closed. This is a caveate of close_gripper() function.
+            gripper_full_closed = self.close_gripper()
+            grasp_success = not gripper_full_closed
 
+            # Test for grasping stability if grasping success
             # Move gripper to location above grasp target
-            self.move_to(location_above_grasp_target, None)
+            if grasp_success:
+                raised_above_grasp_target = (
+                    position[0], position[1], position[2] + raise_height)
+                self.move_to(raised_above_grasp_target, None)
+                gripper_full_closed = self.close_gripper()
+                grasp_success = not gripper_full_closed
+                if grasp_success:
+                    self.shake(0)
+                    self.shake(1)
+                    self.shake(2)
 
-            # Check if grasp is successful
+            # Check if the object is still grasped, then grasp is stable.
             gripper_full_closed = self.close_gripper()
             grasp_success = not gripper_full_closed
 
@@ -1162,46 +1258,3 @@ class Robot(object):
 
     #         place_success = True
     #         return place_success
-
-
-# JUNK
-
-# command = "movel(p[%f,%f,%f,%f,%f,%f],0.5,0.2,0,0,a=1.2,v=0.25)\n" % (-0.5,-0.2,0.1,2.0171,2.4084,0)
-
-# import socket
-
-# HOST = "192.168.1.100"
-# PORT = 30002
-# s = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-# s.connect((HOST,PORT))
-
-# j0 = 0
-# j1 = -3.1415/2
-# j2 = 3.1415/2
-# j3 = -3.1415/2
-# j4 = -3.1415/2
-# j5 = 0;
-
-# joint_acc = 1.2
-# joint_vel = 0.25
-
-# # command = "movej([%f,%f,%f,%f,%f,%f],a=%f,v=%f)\n" % (j0,j1,j2,j3,j4,j5,joint_acc,joint_vel)
-
-
-# #
-
-
-# # True closes
-# command = "set_digital_out(8,True)\n"
-
-# s.send(str.encode(command))
-# data = s.recv(1024)
-
-
-# s.close()
-# print("Received",repr(data))
-
-
-# print()
-
-# String.Format ("movej([%f,%f,%f,%f,%f, %f], a={6}, v={7})\n", j0, j1, j2, j3, j4, j5, a, v);
