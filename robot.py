@@ -158,6 +158,10 @@ class Robot(object):
             vrep.simxFinish(self.sim_client)
 
     def restart_sim(self):
+        # Randomly choose objects to add to scene
+        self.obj_mesh_ind = np.random.randint(
+            0, len(self.mesh_list), size=self.num_obj)
+
         sim_ret, self.UR5_target_handle = vrep.simxGetObjectHandle(
             self.sim_client, 'UR5_target', vrep.simx_opmode_blocking)
         vrep.simxSetObjectPosition(
