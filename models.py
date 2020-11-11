@@ -318,8 +318,10 @@ class reinforcement_net(nn.Module):
                             Variable(affine_mat_after, requires_grad=False), interm_push_feat.data.size())
 
                     # Forward pass through branches, undo rotation on output predictions, upsample results
-                    output_prob.append([nn.Upsample(scale_factor=16, mode='bilinear').forward(F.grid_sample(self.pushnet(interm_push_feat), flow_grid_after, mode='nearest')),
-                                        nn.Upsample(scale_factor=16, mode='bilinear').forward(F.grid_sample(self.graspnet(interm_grasp_feat), flow_grid_after, mode='nearest'))])
+                    output_prob.append(
+                        [nn.Upsample(scale_factor=16, mode='bilinear').forward(F.grid_sample(self.pushnet(interm_push_feat), flow_grid_after, mode='nearest')),
+
+                         nn.Upsample(scale_factor=16, mode='bilinear').forward(F.grid_sample(self.graspnet(interm_grasp_feat), flow_grid_after, mode='nearest'))])
 
             return output_prob, interm_feat
 

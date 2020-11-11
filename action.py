@@ -96,7 +96,6 @@ class Process_Actions(threading.Thread):
                                   self.args.workspace_limits[1][0], shared.valid_depth_heightmap[best_pix_y][best_pix_x] + self.args.workspace_limits[2][0]]
 
             # If pushing, adjust start position, and make sure z value is safe and not too low
-            # or shared.primitive_action == 'place':
             if shared.primitive_action == 'push':
                 finger_width = 0.02
                 safe_kernel_width = int(
