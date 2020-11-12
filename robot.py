@@ -41,6 +41,8 @@ class Robot(object):
                 self.obj_mesh_dir = self.obj_model_dir
             else:
                 self.mesh_list = os.listdir(self.obj_mesh_dir)
+            if '.DS_Store' in self.mesh_list:
+                self.mesh_list.remove('.DS_Store')
 
             # Randomly choose objects to add to scene
             self.obj_mesh_ind = np.random.randint(
@@ -288,8 +290,18 @@ class Robot(object):
                 ret_resp, ret_ints, ret_floats, ret_strings, ret_buffer = vrep.simxCallScriptFunction(self.sim_client, 'remoteApiCommandServer', vrep.sim_scripttype_childscript, 'importShape', [
                     0, 0, 255, 0], object_position + object_orientation + object_color, [curr_mesh_file, curr_shape_name], bytearray(), vrep.simx_opmode_blocking)
             else:
+                def randomizedObjectMass():
+                    mean_std = [[1.5, 0.5], [0.2, 0.1]]
+                    index = np.random.randint(len(mean_std))
+                    return np.random.normal(mean_std[index][0], mean_std[index][1])
+
+                object_mass = randomizedObjectMass()
                 ret_resp, ret_ints, ret_floats, ret_strings, ret_buffer = vrep.simxCallScriptFunction(self.sim_client, 'remoteApiCommandServer', vrep.sim_scripttype_childscript, 'importModel', [
-                    0, 0, 255, 0], object_position + object_orientation + object_color, [curr_mesh_file, curr_shape_name], bytearray(), vrep.simx_opmode_blocking)
+                    0, 0, 255, 0], object_position + object_orientation + [object_mass], [curr_mesh_file, curr_shape_name], bytearray(), vrep.simx_opmode_blocking)
+                returnCode, object_mass_test = vrep.simxGetObjectFloatParameter(
+                    self.sim_client, ret_ints[0], vrep.sim_shapefloatparam_mass, vrep.simx_opmode_blocking)
+                assert abs(object_mass-object_mass_test) < 0.00001
+                print('Added item with mass: %f.' % (object_mass))
 
             if ret_resp == 8:
                 print('Failed to add new objects to simulation. Please restart')
@@ -424,8 +436,8 @@ class Robot(object):
                 sim_ret, UR5_target_position = vrep.simxGetObjectPosition(
                     self.sim_client, self.UR5_target_handle, -1, vrep.simx_opmode_blocking)
 
-            vrep.simxSetObjectPosition(self.sim_client, self.UR5_target_handle, -1,
-                                       (tool_position[0], tool_position[1], tool_position[2]), vrep.simx_opmode_blocking)
+                vrep.simxSetObjectPosition(self.sim_client, self.UR5_target_handle, -1,
+                                           (tool_position[0], tool_position[1], tool_position[2]), vrep.simx_opmode_blocking)
 
         else:
 

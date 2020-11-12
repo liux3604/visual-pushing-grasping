@@ -320,7 +320,7 @@ def checkEmptyTable(args):
     Return true if table is reset.
     '''
     stuff_count = np.zeros(shared.valid_depth_heightmap.shape)
-    stuff_count[shared.valid_depth_heightmap > 0.02] = 1
+    stuff_count[shared.valid_depth_heightmap > 0.01] = 1
     empty_threshold = 300
     if args.is_sim and args.is_testing:
         empty_threshold = 10
