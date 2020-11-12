@@ -6,6 +6,7 @@ import os
 import numpy as np
 import utils
 from simulation import vrep
+import shared
 
 
 class Robot(object):
@@ -261,6 +262,23 @@ class Robot(object):
         return color_img, depth_img
 
     def add_objects(self):
+
+        if self.load_models:
+            # Initialize object mass
+            obj_mesh_dir_list = [
+                '/home/song/visual-pushing-grasping/objects/models',
+                '/home/song/visual-pushing-grasping/objects/models_2kg',
+                '/home/song/visual-pushing-grasping/objects/models_3kg'
+            ]
+            randommass_index = np.random.randint(len(obj_mesh_dir_list))
+            shared.object_mass = randommass_index+1
+            self.obj_mesh_dir = obj_mesh_dir_list[randommass_index]
+
+            self.mesh_list = os.listdir(self.obj_mesh_dir)
+            # Randomly choose objects to add to scene
+            self.obj_mesh_ind = np.random.randint(
+                0, len(self.mesh_list), size=self.num_obj)
+
         # Add each object to robot workspace at x,y location and orientation (random or pre-loaded)
         self.object_handles = []
         for object_idx in range(len(self.obj_mesh_ind)):
@@ -497,7 +515,7 @@ class Robot(object):
             gripper_motor_velocity = -0.5
             # if self.fast_mode:
             #    gripper_motor_velocity = -1.5
-            gripper_motor_force = 100
+            gripper_motor_force = 500
             sim_ret, RG2_gripper_handle = vrep.simxGetObjectHandle(
                 self.sim_client, 'RG2_openCloseJoint', vrep.simx_opmode_blocking)
             sim_ret, gripper_joint_position = vrep.simxGetJointPosition(
@@ -571,7 +589,7 @@ class Robot(object):
 
             # Avoid collision with floor
             position = np.asarray(position).copy()
-            position[2] = max(position[2] - 0.04,
+            position[2] = max(position[2] - 0.015,
                               workspace_limits[2][0] + 0.02)
 
             # Move gripper to location above grasp target
@@ -623,12 +641,13 @@ class Robot(object):
             gripper_full_closed = self.close_gripper()
             grasp_success = not gripper_full_closed
 
+            # Move gripper to location above grasp target no matter if grasp sucess or failure(so as to not block view).
+            raised_above_grasp_target = (
+                position[0], position[1], position[2] + raise_height)
+            self.move_to(raised_above_grasp_target, None)
+
             # Test for grasping stability if grasping success
-            # Move gripper to location above grasp target
             if grasp_success:
-                raised_above_grasp_target = (
-                    position[0], position[1], position[2] + raise_height)
-                self.move_to(raised_above_grasp_target, None)
                 gripper_full_closed = self.close_gripper()
                 grasp_success = not gripper_full_closed
                 if grasp_success:

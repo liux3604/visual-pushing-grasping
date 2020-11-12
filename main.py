@@ -147,7 +147,7 @@ def main(args):
         if not exit_called:
             # Run forward pass with network to get affordances
             shared.push_predictions, shared.grasp_predictions, state_feat = trainer.forward(
-                shared.color_heightmap, shared.valid_depth_heightmap, is_volatile=True)
+                shared.color_heightmap, shared.valid_depth_heightmap, shared.object_mass, is_volatile=True)
 
             # Execute best primitive action on robot in another thread
             shared.action_semaphore.release()
@@ -179,7 +179,7 @@ def main(args):
 
             # Compute training labels
             label_value, prev_reward_value = trainer.get_label_value(
-                prev_primitive_action, prev_push_success, prev_grasp_success, change_detected, prev_push_predictions, prev_grasp_predictions, shared.color_heightmap, shared.valid_depth_heightmap)
+                prev_primitive_action, prev_push_success, prev_grasp_success, change_detected, prev_push_predictions, prev_grasp_predictions, shared.color_heightmap, shared.valid_depth_heightmap, prev_object_mass)
             trainer.label_value_log.append([label_value])
             logger.write_to_log('label-value', trainer.label_value_log)
             trainer.reward_value_log.append([prev_reward_value])
@@ -187,7 +187,7 @@ def main(args):
 
             # Backpropagate
             trainer.backprop(prev_color_heightmap, prev_valid_depth_heightmap,
-                             prev_primitive_action, prev_best_pix_ind, label_value)
+                             prev_primitive_action, prev_best_pix_ind, label_value, prev_object_mass)
 
             # Adjust exploration probability
             if not is_testing:
@@ -310,6 +310,7 @@ def main(args):
         prev_push_predictions = shared.push_predictions.copy()
         prev_grasp_predictions = shared.grasp_predictions.copy()
         prev_best_pix_ind = shared.best_pix_ind
+        prev_object_mass = shared.object_mass
         trainer.iteration += 1
         iteration_time_1 = time.time()
         print('Time elapsed: %f' % (iteration_time_1-iteration_time_0))
@@ -320,7 +321,7 @@ def checkEmptyTable(args):
     Return true if table is reset.
     '''
     stuff_count = np.zeros(shared.valid_depth_heightmap.shape)
-    stuff_count[shared.valid_depth_heightmap > 0.02] = 1
+    stuff_count[shared.valid_depth_heightmap > 0.005] = 1
     empty_threshold = 300
     if args.is_sim and args.is_testing:
         empty_threshold = 10
@@ -383,15 +384,19 @@ if __name__ == '__main__':
                         default=False, help='force code to run in CPU mode')
 
     # ------------- Algorithm options -------------
-    parser.add_argument('--method', dest='method', action='store', default='reinforcement',
+    parser.add_argument('--method', dest='method', action='store',
+                        default='reinforcement',
                         help='set to \'reactive\' (supervised learning) or \'reinforcement\' (reinforcement learning ie Q-learning)')
-    parser.add_argument('--push_rewards', dest='push_rewards', action='store_true',
-                        default=False, help='use immediate rewards (from change detection) for pushing?')
+    parser.add_argument('--push_rewards', dest='push_rewards',
+                        action='store_true', default=False,
+                        help='use immediate rewards (from change detection) for pushing?')
     parser.add_argument('--future_reward_discount',
                         dest='future_reward_discount', type=float, action='store', default=0.5)
     parser.add_argument('--experience_replay', dest='experience_replay',
-                        action='store_true', default=False, help='use prioritized experience replay?')
-    parser.add_argument('--heuristic_bootstrap', dest='heuristic_bootstrap', action='store_true', default=False,
+                        action='store_true', default=False,
+                        help='use prioritized experience replay?')
+    parser.add_argument('--heuristic_bootstrap', dest='heuristic_bootstrap',
+                        action='store_true', default=False,
                         help='use handcrafted grasping algorithm when grasping fails too many times in a row during training?')
     parser.add_argument('--explore_rate_decay',
                         dest='explore_rate_decay', action='store_true', default=False)
@@ -401,15 +406,17 @@ if __name__ == '__main__':
     # -------------- Testing options --------------
     parser.add_argument('--is_testing', dest='is_testing',
                         action='store_true', default=False)
-    parser.add_argument('--max_test_trials', dest='max_test_trials', type=int,
-                        action='store', default=30, help='maximum number of test runs per case/scenario')
+    parser.add_argument('--max_test_trials', dest='max_test_trials',
+                        type=int, action='store', default=30,
+                        help='maximum number of test runs per case/scenario')
     parser.add_argument('--test_preset_cases',
                         dest='test_preset_cases', action='store_true', default=False)
     parser.add_argument('--test_preset_file', dest='test_preset_file',
                         action='store', default='test-10-obj-01.txt')
 
     # ------ Pre-loading and logging options ------
-    parser.add_argument('--load_snapshot', dest='load_snapshot', action='store_true',
+    parser.add_argument('--load_snapshot', dest='load_snapshot',
+                        action='store_true',
                         default=False, help='load pre-trained snapshot of model?')
     parser.add_argument('--snapshot_file',
                         dest='snapshot_file', action='store')

@@ -12,17 +12,18 @@
             "console": "integratedTerminal",
             "args": [
                 "--is_sim",
-                "--push_rewards",
-                "--experience_replay",
+                //"--push_rewards",
+                //"--experience_replay",
                 "--explore_rate_decay",
                 "--save_visualizations",
                 "--num_obj",
-                "4",
+                "10",
+                "--fast_mode",
                 "--grasp_only",
                 "--load_models",
-                "--load_snapshot",
-                "--snapshot_file",
-                "downloads/snapshot-009150.reinforcement.pth"
+                //"--load_snapshot",
+                //"--snapshot_file",
+                //"downloads/snapshot-009150.reinforcement.pth"
             ]
         }
     ]

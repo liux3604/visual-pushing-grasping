@@ -10,6 +10,7 @@ no_change_count = None
 valid_depth_heightmap = None
 color_heightmap = None
 depth_heightmap = None
+object_mass = None
 
 training_semaphore = Semaphore(0)
 action_semaphore = Semaphore(0)
