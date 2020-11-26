@@ -2,8 +2,6 @@ import threading
 import shared
 import numpy as np
 import cv2
-
-
 class Process_Actions(threading.Thread):
     def __init__(self, args, trainer, logger, robot):
         threading.Thread.__init__(self)
@@ -139,13 +137,17 @@ class Process_Actions(threading.Thread):
 
             # Execute primitive
             if shared.primitive_action == 'push':
-                shared.push_success = self.robot.push(
-                    primitive_position, best_rotation_angle, self.args.workspace_limits)
-                print('Push successful: %r' %
-                      (shared.push_success))
+                shared.push_success = self.robot.push(primitive_position, best_rotation_angle, self.args.workspace_limits)
+                print('Push: %r' %(shared.push_success))
             elif shared.primitive_action == 'grasp':
-                shared.grasp_success = self.robot.grasp(
-                    primitive_position, best_rotation_angle, self.args.workspace_limits)
-                print('Grasp successful: %r' %
-                      (shared.grasp_success))
+                # Avoid collision with floor
+                primitive_position[2] = max(primitive_position[2] - 0.015, self.args.workspace_limits[2][0] + 0.02)
+                shared.grasp_success, return_obj_handle, simulation_fail= self.robot.grasp( position=primitive_position, 
+                                                                                            rot_angle=best_rotation_angle,
+                                                                                            place_motion=False)
+                if shared.grasp_success:
+                    self.robot.remove_object(return_obj_handle, self.robot.obj_target_handles)
+                
+                print('----- Grasp----- : %r' %(shared.grasp_success))
+                
             shared.training_semaphore.release()
