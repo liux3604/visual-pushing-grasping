@@ -39,8 +39,7 @@ class Trainer(object):
             push_class_weights = torch.ones(push_num_classes)
             push_class_weights[push_num_classes - 1] = 0
             if self.use_cuda:
-                self.push_criterion = CrossEntropyLoss2d(
-                    push_class_weights.cuda()).cuda()
+                self.push_criterion = CrossEntropyLoss2d(push_class_weights.cuda()).cuda()
             else:
                 self.push_criterion = CrossEntropyLoss2d(push_class_weights)
             grasp_num_classes = 3  # 0 - grasp, 1 - failed grasp, 2 - no loss
@@ -133,65 +132,46 @@ class Trainer(object):
     def forward(self, color_heightmap, depth_heightmap, object_mass, is_volatile=False, specific_rotation=-1):
 
         # Apply 2x scale to input heightmaps
-        color_heightmap_2x = ndimage.zoom(
-            color_heightmap, zoom=[2, 2, 1], order=0)
-        depth_heightmap_2x = ndimage.zoom(
-            depth_heightmap, zoom=[2, 2], order=0)
+        color_heightmap_2x = ndimage.zoom(color_heightmap, zoom=[2, 2, 1], order=0)
+        depth_heightmap_2x = ndimage.zoom(depth_heightmap, zoom=[2, 2], order=0)
         assert(color_heightmap_2x.shape[0:2] == depth_heightmap_2x.shape[0:2])
 
         # Add extra padding (to handle rotations inside network)
         diag_length = float(color_heightmap_2x.shape[0]) * np.sqrt(2)
         diag_length = np.ceil(diag_length/32)*32
         padding_width = int((diag_length - color_heightmap_2x.shape[0])/2)
-        color_heightmap_2x_r = np.pad(
-            color_heightmap_2x[:, :, 0], padding_width, 'constant', constant_values=0)
-        color_heightmap_2x_r.shape = (
-            color_heightmap_2x_r.shape[0], color_heightmap_2x_r.shape[1], 1)
-        color_heightmap_2x_g = np.pad(
-            color_heightmap_2x[:, :, 1], padding_width, 'constant', constant_values=0)
-        color_heightmap_2x_g.shape = (
-            color_heightmap_2x_g.shape[0], color_heightmap_2x_g.shape[1], 1)
-        color_heightmap_2x_b = np.pad(
-            color_heightmap_2x[:, :, 2], padding_width, 'constant', constant_values=0)
-        color_heightmap_2x_b.shape = (
-            color_heightmap_2x_b.shape[0], color_heightmap_2x_b.shape[1], 1)
-        color_heightmap_2x = np.concatenate(
-            (color_heightmap_2x_r, color_heightmap_2x_g, color_heightmap_2x_b), axis=2)
-        depth_heightmap_2x = np.pad(
-            depth_heightmap_2x, padding_width, 'constant', constant_values=0)
+        color_heightmap_2x_r = np.pad(color_heightmap_2x[:, :, 0], padding_width, 'constant', constant_values=0)
+        color_heightmap_2x_r.shape = (color_heightmap_2x_r.shape[0], color_heightmap_2x_r.shape[1], 1)
+        color_heightmap_2x_g = np.pad(color_heightmap_2x[:, :, 1], padding_width, 'constant', constant_values=0)
+        color_heightmap_2x_g.shape = (color_heightmap_2x_g.shape[0], color_heightmap_2x_g.shape[1], 1)
+        color_heightmap_2x_b = np.pad(color_heightmap_2x[:, :, 2], padding_width, 'constant', constant_values=0)
+        color_heightmap_2x_b.shape = (color_heightmap_2x_b.shape[0], color_heightmap_2x_b.shape[1], 1)
+        color_heightmap_2x = np.concatenate((color_heightmap_2x_r, color_heightmap_2x_g, color_heightmap_2x_b), axis=2)
+        depth_heightmap_2x = np.pad(depth_heightmap_2x, padding_width, 'constant', constant_values=0)
 
         # Pre-process color image (scale and normalize)
         image_mean = [0.485, 0.456, 0.406]
         image_std = [0.229, 0.224, 0.225]
         input_color_image = color_heightmap_2x.astype(float)/255
         for c in range(3):
-            input_color_image[:, :, c] = (
-                input_color_image[:, :, c] - image_mean[c])/image_std[c]
+            input_color_image[:, :, c] = (input_color_image[:, :, c] - image_mean[c])/image_std[c]
 
         # Pre-process depth image (normalize)
         image_mean = [0.01, 0.01, 0.01]
         image_std = [0.03, 0.03, 0.03]
-        depth_heightmap_2x.shape = (
-            depth_heightmap_2x.shape[0], depth_heightmap_2x.shape[1], 1)
-        input_depth_image = np.concatenate(
-            (depth_heightmap_2x, depth_heightmap_2x, depth_heightmap_2x), axis=2)
+        depth_heightmap_2x.shape = (depth_heightmap_2x.shape[0], depth_heightmap_2x.shape[1], 1)
+        input_depth_image = np.concatenate((depth_heightmap_2x, depth_heightmap_2x, depth_heightmap_2x), axis=2)
         for c in range(3):
-            input_depth_image[:, :, c] = (
-                input_depth_image[:, :, c] - image_mean[c])/image_std[c]
+            input_depth_image[:, :, c] = (input_depth_image[:, :, c] - image_mean[c])/image_std[c]
 
         # Construct minibatch of size 1 (b,c,h,w)
-        input_color_image.shape = (
-            input_color_image.shape[0], input_color_image.shape[1], input_color_image.shape[2], 1)
-        input_depth_image.shape = (
-            input_depth_image.shape[0], input_depth_image.shape[1], input_depth_image.shape[2], 1)
-        input_color_data = torch.from_numpy(
-            input_color_image.astype(np.float32)).permute(3, 2, 0, 1)
-        input_depth_data = torch.from_numpy(
-            input_depth_image.astype(np.float32)).permute(3, 2, 0, 1)
+        input_color_image.shape = (input_color_image.shape[0], input_color_image.shape[1], input_color_image.shape[2], 1)
+        input_depth_image.shape = (input_depth_image.shape[0], input_depth_image.shape[1], input_depth_image.shape[2], 1)
+        input_color_data = torch.from_numpy(input_color_image.astype(np.float32)).permute(3, 2, 0, 1)
+        input_depth_data = torch.from_numpy(input_depth_image.astype(np.float32)).permute(3, 2, 0, 1)
 
         # Pass input data through model
-        output_prob, state_feat = self.model.forward(
-            input_color_data, input_depth_data, object_mass, is_volatile, specific_rotation)
+        output_prob, state_feat = self.model.forward(input_color_data, input_depth_data, object_mass, is_volatile, specific_rotation)
 
         if self.method == 'reactive':
 
@@ -258,8 +238,7 @@ class Trainer(object):
             else:
                 next_push_predictions, next_grasp_predictions, next_state_feat = self.forward(
                     next_color_heightmap, next_depth_heightmap, prev_object_mass, is_volatile=True)
-                future_reward = max(
-                    np.max(next_push_predictions), np.max(next_grasp_predictions))
+                future_reward = max(np.max(next_push_predictions), np.max(next_grasp_predictions))
 
                 # # Experiment: use Q differences
                 # push_predictions_difference = next_push_predictions - prev_push_predictions
@@ -270,12 +249,10 @@ class Trainer(object):
             print('Future reward: %f' % (future_reward))
             if primitive_action == 'push' and not self.push_rewards:
                 expected_reward = self.future_reward_discount * future_reward
-                print('Expected reward: %f + %f x %f = %f' %
-                      (0.0, self.future_reward_discount, future_reward, expected_reward))
+                print('Expected reward: %f + %f x %f = %f' %(0.0, self.future_reward_discount, future_reward, expected_reward))
             else:
                 expected_reward = current_reward + self.future_reward_discount * future_reward
-                print('Expected reward: %f + %f x %f = %f' % (current_reward,
-                                                              self.future_reward_discount, future_reward, expected_reward))
+                print('Expected reward: %f + %f x %f = %f' % (current_reward, self.future_reward_discount, future_reward, expected_reward))
             return expected_reward, current_reward
 
     # Compute labels and backpropagate
@@ -308,11 +285,9 @@ class Trainer(object):
                     color_heightmap, depth_heightmap, prev_object_mass, is_volatile=False, specific_rotation=best_pix_ind[0])
 
                 if self.use_cuda:
-                    loss = self.push_criterion(self.model.output_prob[0][0], Variable(
-                        torch.from_numpy(label).long().cuda()))
+                    loss = self.push_criterion(self.model.output_prob[0][0], Variable(torch.from_numpy(label).long().cuda()))
                 else:
-                    loss = self.push_criterion(
-                        self.model.output_prob[0][0], Variable(torch.from_numpy(label).long()))
+                    loss = self.push_criterion(self.model.output_prob[0][0], Variable(torch.from_numpy(label).long()))
                 loss.backward()
                 loss_value = loss.cpu().data.numpy()
 
@@ -325,27 +300,22 @@ class Trainer(object):
                     color_heightmap, depth_heightmap, prev_object_mass, is_volatile=False, specific_rotation=best_pix_ind[0])
 
                 if self.use_cuda:
-                    loss = self.grasp_criterion(self.model.output_prob[0][1], Variable(
-                        torch.from_numpy(label).long().cuda()))
+                    loss = self.grasp_criterion(self.model.output_prob[0][1], Variable(torch.from_numpy(label).long().cuda()))
                 else:
-                    loss = self.grasp_criterion(
-                        self.model.output_prob[0][1], Variable(torch.from_numpy(label).long()))
+                    loss = self.grasp_criterion(self.model.output_prob[0][1], Variable(torch.from_numpy(label).long()))
                 loss.backward()
                 loss_value += loss.cpu().data.numpy()
 
                 # Since grasping is symmetric, train with another forward pass of opposite rotation angle
-                opposite_rotate_idx = (
-                    best_pix_ind[0] + self.model.num_rotations/2) % self.model.num_rotations
+                opposite_rotate_idx = (best_pix_ind[0] + self.model.num_rotations/2) % self.model.num_rotations
 
                 push_predictions, grasp_predictions, state_feat = self.forward(
                     color_heightmap, depth_heightmap, prev_object_mass, is_volatile=False, specific_rotation=opposite_rotate_idx)
 
                 if self.use_cuda:
-                    loss = self.grasp_criterion(self.model.output_prob[0][1], Variable(
-                        torch.from_numpy(label).long().cuda()))
+                    loss = self.grasp_criterion(self.model.output_prob[0][1], Variable(torch.from_numpy(label).long().cuda()))
                 else:
-                    loss = self.grasp_criterion(
-                        self.model.output_prob[0][1], Variable(torch.from_numpy(label).long()))
+                    loss = self.grasp_criterion(self.model.output_prob[0][1], Variable(torch.from_numpy(label).long()))
                 loss.backward()
                 loss_value += loss.cpu().data.numpy()
 
@@ -407,8 +377,7 @@ class Trainer(object):
                 loss.backward()
                 loss_value = loss.cpu().data.numpy()
 
-                opposite_rotate_idx = (
-                    best_pix_ind[0] + self.model.num_rotations/2) % self.model.num_rotations
+                opposite_rotate_idx = (best_pix_ind[0] + self.model.num_rotations/2) % self.model.num_rotations
 
                 push_predictions, grasp_predictions, state_feat = self.forward(
                     color_heightmap, depth_heightmap, prev_object_mass, is_volatile=False, specific_rotation=opposite_rotate_idx)
@@ -441,24 +410,17 @@ class Trainer(object):
                 # prediction_vis[prediction_vis < 0] = 0 # assume probability
                 # prediction_vis[prediction_vis > 1] = 1 # assume probability
                 prediction_vis = np.clip(prediction_vis, 0, 1)
-                prediction_vis.shape = (
-                    predictions.shape[1], predictions.shape[2])
-                prediction_vis = cv2.applyColorMap(
-                    (prediction_vis*255).astype(np.uint8), cv2.COLORMAP_JET)
+                prediction_vis.shape = (predictions.shape[1], predictions.shape[2])
+                prediction_vis = cv2.applyColorMap((prediction_vis*255).astype(np.uint8), cv2.COLORMAP_JET)
                 if rotate_idx == best_pix_ind[0]:
-                    prediction_vis = cv2.circle(prediction_vis, (int(
-                        best_pix_ind[2]), int(best_pix_ind[1])), 7, (0, 0, 255), 2)
-                prediction_vis = ndimage.rotate(
-                    prediction_vis, rotate_idx*(360.0/num_rotations), reshape=False, order=0)
-                background_image = ndimage.rotate(
-                    color_heightmap, rotate_idx*(360.0/num_rotations), reshape=False, order=0)
-                prediction_vis = (0.5*cv2.cvtColor(background_image,
-                                                   cv2.COLOR_RGB2BGR) + 0.5*prediction_vis).astype(np.uint8)
+                    prediction_vis = cv2.circle(prediction_vis, (int(best_pix_ind[2]), int(best_pix_ind[1])), 7, (0, 0, 255), 2)
+                prediction_vis = ndimage.rotate(prediction_vis, rotate_idx*(360.0/num_rotations), reshape=False, order=0)
+                background_image = ndimage.rotate(color_heightmap, rotate_idx*(360.0/num_rotations), reshape=False, order=0)
+                prediction_vis = (0.5*cv2.cvtColor(background_image, cv2.COLOR_RGB2BGR) + 0.5*prediction_vis).astype(np.uint8)
                 if tmp_row_canvas is None:
                     tmp_row_canvas = prediction_vis
                 else:
-                    tmp_row_canvas = np.concatenate(
-                        (tmp_row_canvas, prediction_vis), axis=1)
+                    tmp_row_canvas = np.concatenate((tmp_row_canvas, prediction_vis), axis=1)
             if canvas is None:
                 canvas = tmp_row_canvas
             else:
@@ -471,27 +433,21 @@ class Trainer(object):
         num_rotations = 16
 
         for rotate_idx in range(num_rotations):
-            rotated_heightmap = ndimage.rotate(
-                depth_heightmap, rotate_idx*(360.0/num_rotations), reshape=False, order=0)
+            rotated_heightmap = ndimage.rotate(depth_heightmap, rotate_idx*(360.0/num_rotations), reshape=False, order=0)
             valid_areas = np.zeros(rotated_heightmap.shape)
-            valid_areas[ndimage.interpolation.shift(
-                rotated_heightmap, [0, -25], order=0) - rotated_heightmap > 0.02] = 1
+            valid_areas[ndimage.interpolation.shift(rotated_heightmap, [0, -25], order=0) - rotated_heightmap > 0.02] = 1
             # valid_areas = np.multiply(valid_areas, rotated_heightmap)
             blur_kernel = np.ones((25, 25), np.float32)/9
             valid_areas = cv2.filter2D(valid_areas, -1, blur_kernel)
-            tmp_push_predictions = ndimage.rotate(
-                valid_areas, -rotate_idx*(360.0/num_rotations), reshape=False, order=0)
-            tmp_push_predictions.shape = (
-                1, rotated_heightmap.shape[0], rotated_heightmap.shape[1])
+            tmp_push_predictions = ndimage.rotate(valid_areas, -rotate_idx*(360.0/num_rotations), reshape=False, order=0)
+            tmp_push_predictions.shape = (1, rotated_heightmap.shape[0], rotated_heightmap.shape[1])
 
             if rotate_idx == 0:
                 push_predictions = tmp_push_predictions
             else:
-                push_predictions = np.concatenate(
-                    (push_predictions, tmp_push_predictions), axis=0)
+                push_predictions = np.concatenate((push_predictions, tmp_push_predictions), axis=0)
 
-        best_pix_ind = np.unravel_index(
-            np.argmax(push_predictions), push_predictions.shape)
+        best_pix_ind = np.unravel_index(np.argmax(push_predictions), push_predictions.shape)
         return best_pix_ind
 
     def grasp_heuristic(self, depth_heightmap):
@@ -499,25 +455,20 @@ class Trainer(object):
         num_rotations = 16
 
         for rotate_idx in range(num_rotations):
-            rotated_heightmap = ndimage.rotate(
-                depth_heightmap, rotate_idx*(360.0/num_rotations), reshape=False, order=0)
+            rotated_heightmap = ndimage.rotate(depth_heightmap, rotate_idx*(360.0/num_rotations), reshape=False, order=0)
             valid_areas = np.zeros(rotated_heightmap.shape)
             valid_areas[np.logical_and(rotated_heightmap - ndimage.interpolation.shift(rotated_heightmap, [0, -25], order=0)
                                        > 0.02, rotated_heightmap - ndimage.interpolation.shift(rotated_heightmap, [0, 25], order=0) > 0.02)] = 1
             # valid_areas = np.multiply(valid_areas, rotated_heightmap)
             blur_kernel = np.ones((25, 25), np.float32)/9
             valid_areas = cv2.filter2D(valid_areas, -1, blur_kernel)
-            tmp_grasp_predictions = ndimage.rotate(
-                valid_areas, -rotate_idx*(360.0/num_rotations), reshape=False, order=0)
-            tmp_grasp_predictions.shape = (
-                1, rotated_heightmap.shape[0], rotated_heightmap.shape[1])
+            tmp_grasp_predictions = ndimage.rotate(valid_areas, -rotate_idx*(360.0/num_rotations), reshape=False, order=0)
+            tmp_grasp_predictions.shape = (1, rotated_heightmap.shape[0], rotated_heightmap.shape[1])
 
             if rotate_idx == 0:
                 grasp_predictions = tmp_grasp_predictions
             else:
-                grasp_predictions = np.concatenate(
-                    (grasp_predictions, tmp_grasp_predictions), axis=0)
+                grasp_predictions = np.concatenate((grasp_predictions, tmp_grasp_predictions), axis=0)
 
-        best_pix_ind = np.unravel_index(
-            np.argmax(grasp_predictions), grasp_predictions.shape)
+        best_pix_ind = np.unravel_index(np.argmax(grasp_predictions), grasp_predictions.shape)
         return best_pix_ind
