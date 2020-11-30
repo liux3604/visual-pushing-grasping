@@ -18,7 +18,7 @@ from logger import Logger
 import Utils_sim as utils
 from action import Process_Actions
 import shared
-
+import copy
 
 def main(args):
     # --------------- Setup options ---------------
@@ -116,89 +116,77 @@ def main(args):
     while True:
         print('\n%s iteration: %d' %('Testing' if is_testing else 'Training', trainer.iteration))
         iteration_time_0 = time.time()
+        
+        take_snapshot(robot, args)
 
-        # Get latest RGB-D image
-        color_img, depth_img = robot.get_camera_data()
-        # Apply depth scale from calibration
-        depth_img = depth_img * robot.cam_depth_scale
-
-        # Get heightmap from RGB-D image (by re-projecting 3D point cloud)
-        shared.color_heightmap, shared.depth_heightmap = utils.get_heightmap(color_img=color_img,
-                                                                             depth_img=depth_img,
-                                                                             cam_intrinsics=robot.cam_intrinsics,
-                                                                             cam_pose=robot.cam_pose,
-                                                                             workspace_limits=args.workspace_limits,
-                                                                             heightmap_resolution=args.heightmap_resolution)
-
-        shared.valid_depth_heightmap = shared.depth_heightmap.copy()
-        shared.valid_depth_heightmap[np.isnan(shared.valid_depth_heightmap)] = 0
-
-        # Save RGB-D images and RGB-D heightmaps
-        logger.save_images(trainer.iteration, color_img, depth_img, '0')
-        logger.save_heightmaps(trainer.iteration, shared.color_heightmap, shared.valid_depth_heightmap, '0')
-
-        # Remove boundary objects in simulation
-        if is_sim:
-            robot.remove_out_of_bound_obj()
+        # Making a deep copy for the cases of table_empty_flag=True
+        color_heightmap_training = copy.deepcopy(shared.color_heightmap)
+        valid_depth_heightmap_training = copy.deepcopy(shared.valid_depth_heightmap)
 
         # Make sure simulation is still stable (if not, reset simulation)
+        sim_stable_flag = True
         if is_sim and (not robot.check_sim_ok()):
             print('Restarting simulation: Simulation unstable.')
+            sim_stable_flag = False
             robot.stop_sim()
             robot.restart_sim()
             shared.no_change_count = [0, 0]
+            take_snapshot(robot, args)
 
         # Reset simulation or pause real-world training if table is empty
+        table_empty_flag = False
         if isTableEmpty(args):
+            table_empty_flag = True
             shared.no_change_count = [0, 0]
+            if is_sim:
+                robot.stop_sim()
+                robot.restart_sim()
+            else:
+                robot.restart_real()
+            take_snapshot(robot, args)
 
         if not exit_called:
             # Run forward pass with network to get affordances
-            shared.push_predictions, shared.grasp_predictions, state_feat = trainer.forward(shared.color_heightmap, shared.valid_depth_heightmap, shared.object_mass, is_volatile=True)
-
+            shared.push_predictions, shared.grasp_predictions, _ = trainer.forward(
+                                                                    color_heightmap = shared.color_heightmap, 
+                                                                    depth_heightmap = shared.valid_depth_heightmap, 
+                                                                    object_mass = shared.object_mass, 
+                                                                    is_volatile = True,
+                                                                    specific_rotation = -1)
             # Execute best primitive action on robot in another thread
             shared.action_semaphore.release()
 
         # Run training iteration in current thread (aka training thread)
-        if not is_start_new_training_flag:
+        if sim_stable_flag and 'prev_color_heightmap' in locals():
             # Detect changes
-            depth_diff = abs(shared.depth_heightmap - prev_depth_heightmap)
-            depth_diff[np.isnan(depth_diff)] = 0
-            depth_diff[depth_diff > 0.3] = 0
-            depth_diff[depth_diff < 0.01] = 0
-            depth_diff[depth_diff > 0] = 1
-            change_threshold = 300
-            change_value = np.sum(depth_diff)
-            change_detected = change_value > change_threshold or prev_grasp_success
-            print('Change detected: %r (value: %d)' %
-                  (change_detected, change_value))
+            change_detected = detect_changes(valid_depth_heightmap_training, prev_valid_depth_heightmap, change_threshold=300)
+            update_no_change_counct(change_detected, prev_primitive_action)
 
-            if change_detected:
-                if prev_primitive_action == 'push':
-                    shared.no_change_count[0] = 0
-                elif prev_primitive_action == 'grasp':
-                    shared.no_change_count[1] = 0
-            else:
-                if prev_primitive_action == 'push':
-                    shared.no_change_count[0] += 1
-                elif prev_primitive_action == 'grasp':
-                    shared.no_change_count[1] += 1
-
-            # Compute training labels
-            label_value, prev_reward_value = trainer.get_label_value(
-                prev_primitive_action, prev_push_success, prev_grasp_success, change_detected, prev_push_predictions, prev_grasp_predictions, shared.color_heightmap, shared.valid_depth_heightmap, prev_object_mass)
-            trainer.label_value_log.append([label_value])
-            logger.write_to_log('label-value', trainer.label_value_log)
-            trainer.reward_value_log.append([prev_reward_value])
-            logger.write_to_log('reward-value', trainer.reward_value_log)
+            # Calculate the expected reward value and current one-time reward value for training.
+            expected_reward, current_one_time_reward = trainer.calculate_reward_values(
+                                                                primitive_action = prev_primitive_action, 
+                                                                grasp_success = prev_grasp_success, 
+                                                                change_detected = change_detected, 
+                                                                next_color_heightmap = color_heightmap_training, 
+                                                                next_depth_heightmap = valid_depth_heightmap_training, 
+                                                                prev_object_mass = prev_object_mass)
+            # Logging
+            trainer.expected_reward_log.append([expected_reward])
+            logger.write_to_log('expected_reward(Largest Q-value)', trainer.expected_reward_log)
+            trainer.current_one_time_reward_log.append([current_one_time_reward])
+            logger.write_to_log('current_one_time_reward', trainer.current_one_time_reward_log)
 
             # Backpropagate
-            trainer.backprop(prev_color_heightmap, prev_valid_depth_heightmap, prev_primitive_action, prev_best_pix_ind, label_value, prev_object_mass)
+            trainer.backprop(color_heightmap=prev_color_heightmap, 
+                             depth_heightmap=prev_valid_depth_heightmap, 
+                             primitive_action=prev_primitive_action, 
+                             best_pix_ind=prev_best_pix_ind, 
+                             expected_reward=expected_reward, 
+                             prev_object_mass=prev_object_mass)
 
             # Adjust exploration probability
             if not is_testing:
-                explore_prob = max(
-                    0.5 * np.power(0.9998, trainer.iteration), 0.1) if explore_rate_decay else 0.5
+                explore_prob = max(0.5 * np.power(0.9998, trainer.iteration), 0.1) if explore_rate_decay else 0.5
 
             # Do sampling for experience replay
             if experience_replay and not is_testing:
@@ -207,18 +195,18 @@ def main(args):
                     sample_primitive_action_id = 0
                     if method == 'reactive':
                         # random.randint(1, 2) # 2
-                        sample_reward_value = 0 if prev_reward_value == 1 else 1
+                        sample_reward_value = 0 if current_one_time_reward == 1 else 1
                     elif method == 'reinforcement':
-                        sample_reward_value = 0 if prev_reward_value == 0.5 else 0.5
+                        sample_reward_value = 0 if current_one_time_reward == 0.5 else 0.5
                 elif sample_primitive_action == 'grasp':
                     sample_primitive_action_id = 1
                     if method == 'reactive':
-                        sample_reward_value = 0 if prev_reward_value == 1 else 1
+                        sample_reward_value = 0 if current_one_time_reward == 1 else 1
                     elif method == 'reinforcement':
-                        sample_reward_value = 0 if prev_reward_value == 1 else 1
+                        sample_reward_value = 0 if current_one_time_reward == 1 else 1
 
                 # Get samples of the same primitive but with different results
-                sample_ind = np.argwhere(np.logical_and(np.asarray(trainer.reward_value_log)[1:trainer.iteration, 0] == sample_reward_value, np.asarray(
+                sample_ind = np.argwhere(np.logical_and(np.asarray(trainer.current_one_time_reward_log)[1:trainer.iteration, 0] == sample_reward_value, np.asarray(
                     trainer.executed_action_log)[1:trainer.iteration, 0] == sample_primitive_action_id))
 
                 if sample_ind.size > 0:
@@ -226,7 +214,7 @@ def main(args):
                     if method == 'reactive':
                         sample_surprise_values = np.abs(np.asarray(trainer.predicted_value_log)[sample_ind[:, 0]] - (1 - sample_reward_value))
                     elif method == 'reinforcement':
-                        sample_surprise_values = np.abs(np.asarray(trainer.predicted_value_log)[sample_ind[:, 0]] - np.asarray(trainer.label_value_log)[sample_ind[:, 0]])
+                        sample_surprise_values = np.abs(np.asarray(trainer.predicted_value_log)[sample_ind[:, 0]] - np.asarray(trainer.expected_reward_log)[sample_ind[:, 0]])
                     sorted_surprise_ind = np.argsort(sample_surprise_values[:, 0])
                     sorted_sample_ind = sample_ind[sorted_surprise_ind, 0]
                     pow_law_exp = 2
@@ -242,8 +230,12 @@ def main(args):
 
                     # Compute forward pass with sample
                     with torch.no_grad():
-                        sample_push_predictions, sample_grasp_predictions, sample_state_feat = trainer.forward(
-                            sample_color_heightmap, sample_depth_heightmap, is_volatile=True)
+                        sample_push_predictions, sample_grasp_predictions, _ = trainer.forward(
+                                                                                            color_heightmap=sample_color_heightmap, 
+                                                                                            depth_heightmap=sample_depth_heightmap, 
+                                                                                            object_mass=shared.object_mass, 
+                                                                                            is_volatile=True,
+                                                                                            specific_rotation=-1)
 
                     # Load next sample RGB-D heightmap
                     next_sample_color_heightmap = cv2.imread(os.path.join(logger.color_heightmaps_directory, '%06d.0.color.png' % (sample_iteration+1)))
@@ -254,21 +246,26 @@ def main(args):
                     sample_push_success = sample_reward_value == 0.5
                     sample_grasp_success = sample_reward_value == 1
                     sample_change_detected = sample_push_success
-                    # new_sample_label_value, _ = trainer.get_label_value(sample_primitive_action, sample_push_success, sample_grasp_success, sample_change_detected, sample_push_predictions, sample_grasp_predictions, next_sample_color_heightmap, next_sample_depth_heightmap)
+                    # new_sample_expected_reward, _ = trainer.calculate_reward_values(sample_primitive_action, sample_push_success, sample_grasp_success, sample_change_detected, sample_push_predictions, sample_grasp_predictions, next_sample_color_heightmap, next_sample_depth_heightmap)
 
                     # Get labels for sample and backpropagate
                     sample_best_pix_ind = (np.asarray(trainer.executed_action_log)[sample_iteration, 1:4]).astype(int)
-                    trainer.backprop(sample_color_heightmap, sample_depth_heightmap, sample_primitive_action, sample_best_pix_ind, trainer.label_value_log[sample_iteration])
+                    trainer.backprop(color_heightmap=sample_color_heightmap, 
+                                     depth_heightmap=sample_depth_heightmap, 
+                                     primitive_action=sample_primitive_action, 
+                                     best_pix_ind=sample_best_pix_ind, 
+                                     expected_reward=trainer.expected_reward_log[sample_iteration],
+                                     prev_object_mass=prev_object_mass)
 
                     # Recompute prediction value and label for replay buffer
                     if sample_primitive_action == 'push':
                         trainer.predicted_value_log[sample_iteration] = [
                             np.max(sample_push_predictions)]
-                        # trainer.label_value_log[sample_iteration] = [new_sample_label_value]
+                        # trainer.expected_reward_log[sample_iteration] = [new_sample_expected_reward]
                     elif sample_primitive_action == 'grasp':
                         trainer.predicted_value_log[sample_iteration] = [
                             np.max(sample_grasp_predictions)]
-                        # trainer.label_value_log[sample_iteration] = [new_sample_label_value]
+                        # trainer.expected_reward_log[sample_iteration] = [new_sample_expected_reward]
 
                 else:
                     print(
@@ -291,23 +288,60 @@ def main(args):
 
         # Save information for next training step
         is_start_new_training_flag = False
-        prev_color_img = color_img.copy()
-        prev_depth_img = depth_img.copy()
         prev_color_heightmap = shared.color_heightmap.copy()
-        prev_depth_heightmap = shared.depth_heightmap.copy()
         prev_valid_depth_heightmap = shared.valid_depth_heightmap.copy()
-        prev_push_success = shared.push_success
         prev_grasp_success = shared.grasp_success
         prev_primitive_action = shared.primitive_action
-        prev_push_predictions = shared.push_predictions.copy()
-        prev_grasp_predictions = shared.grasp_predictions.copy()
         prev_best_pix_ind = shared.best_pix_ind
         prev_object_mass = shared.object_mass
         trainer.iteration += 1
-        iteration_time_1 = time.time()
-        print('Time elapsed: %f' % (iteration_time_1-iteration_time_0))
-        shared.restarted = False
+        print('Time elapsed: %f' % (time.time()-iteration_time_0))
 
+# Get color and depth heightmap
+def take_snapshot(robot, args):
+    # Get latest RGB-D image
+    color_img, depth_img = robot.get_camera_data()
+    # Apply depth scale from calibration
+    depth_img = depth_img * robot.cam_depth_scale
+
+    # Get heightmap from RGB-D image (by re-projecting 3D point cloud)
+    shared.color_heightmap, shared.depth_heightmap = utils.get_heightmap(
+                                                    color_img=color_img,
+                                                    depth_img=depth_img,
+                                                    cam_intrinsics=robot.cam_intrinsics,
+                                                    cam_pose=robot.cam_pose,
+                                                    workspace_limits=args.workspace_limits,
+                                                    heightmap_resolution=args.heightmap_resolution)
+
+    shared.valid_depth_heightmap = shared.depth_heightmap.copy()
+    shared.valid_depth_heightmap[np.isnan(shared.valid_depth_heightmap)] = 0
+    # Save RGB-D images and RGB-D heightmaps
+    logger.save_images(trainer.iteration, color_img, depth_img, '0')
+    logger.save_heightmaps(trainer.iteration, shared.color_heightmap, shared.valid_depth_heightmap, '0')
+
+# Detect changes between depth_heightmap and prev_depth_heightmap
+def detect_changes(curr_valid_depth_heightmap, prev_valid_depth_heightmap, change_threshold=300):
+    depth_diff = abs(curr_valid_depth_heightmap - prev_valid_depth_heightmap)
+    depth_diff[np.isnan(depth_diff)] = 0
+    depth_diff[depth_diff > 0.3] = 0
+    depth_diff[depth_diff < 0.01] = 0
+    depth_diff[depth_diff > 0] = 1
+    change_value = np.sum(depth_diff)
+    change_detected = change_value > change_threshold
+    print('Change detected: %r (value: %d)' %(change_detected, change_value))
+    return change_detected
+
+def update_no_change_counct(change_detected, prev_primitive_action):
+    if change_detected:
+        if prev_primitive_action == 'push':
+            shared.no_change_count[0] = 0
+        elif prev_primitive_action == 'grasp':
+            shared.no_change_count[1] = 0
+    else:
+        if prev_primitive_action == 'push':
+            shared.no_change_count[0] += 1
+        elif prev_primitive_action == 'grasp':
+            shared.no_change_count[1] += 1
 
 def isTableEmpty(args):
     ''' Reset simulation or pause real-world training if table is empty by inspecting the table image according to an empty_threshold. 
@@ -315,10 +349,8 @@ def isTableEmpty(args):
         Return true if table is reset.
     '''
     table_isEmpty = False
-    if args.is_sim and shared.no_change_count[0] + shared.no_change_count[1] > 8:
+    if args.is_sim and shared.no_change_count[0] + shared.no_change_count[1] > 3:
         print('Restarting simulation: Failed too many times in simulation. ')
-        robot.stop_sim()
-        robot.restart_sim()
         # If at end of test run, re-load original weights (before test run)
         if args.is_testing:
             trainer.model.load_state_dict(torch.load(snapshot_file))
@@ -326,8 +358,6 @@ def isTableEmpty(args):
 
     if args.is_sim and (not len(robot.obj_target_handles)):
         print('Restarting simulation: No object handles left in the scene.')
-        robot.stop_sim()
-        robot.restart_sim()
         table_isEmpty = True
 
     stuff_count = np.zeros(shared.valid_depth_heightmap.shape)
@@ -341,7 +371,6 @@ def isTableEmpty(args):
     if not args.is_sim and total_num_pixels < empty_threshold:
         print('Not enough stuff on the table (value: %d)! Flipping over bin of objects...' % (total_num_pixels))
         # time.sleep(30)
-        robot.restart_real()
         table_isEmpty = True
 
     if table_isEmpty:
@@ -361,19 +390,19 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train robotic agents to learn how to plan complementary pushing and grasping actions for manipulation with deep reinforcement learning in PyTorch.')
 
     # --------------- Setup options ---------------
-    parser.add_argument('--is_sim', dest='is_sim', action='store_true', default=False, help='run in simulation?')
-    parser.add_argument('--obj_mesh_dir', dest='obj_mesh_dir', action='store', default='objects/blocks', help='directory containing 3D mesh files (.obj) of objects to be added to simulation')
-    parser.add_argument('--obj_model_dir', dest='obj_model_dir', action='store', default='objects/models', help='directory containing 3D model files (.ttm) of objects to be added to simulation')
-    parser.add_argument('--num_obj', dest='num_obj', type=int, action='store', default=10, help='number of objects to add to simulation')
-    parser.add_argument('--tcp_host_ip', dest='tcp_host_ip', action='store', default='100.127.7.223', help='IP address to robot arm as TCP client (UR5)')
-    parser.add_argument('--tcp_port', dest='tcp_port', type=int, action='store', default=30002, help='port to robot arm as TCP client (UR5)')
-    parser.add_argument('--rtc_host_ip', dest='rtc_host_ip', action='store', default='100.127.7.223', help='IP address to robot arm as real-time client (UR5)')
-    parser.add_argument('--rtc_port', dest='rtc_port', type=int, action='store', default=30003, help='port to robot arm as real-time client (UR5)')
-    parser.add_argument('--random_seed', dest='random_seed', type=int, action='store', default=1234, help='random seed for simulation and neural net initialization')
-    parser.add_argument('--cpu', dest='force_cpu', action='store_true', default=False, help='force code to run in CPU mode')
+    parser.add_argument('--is_sim',         dest='is_sim',          action='store_true',    default=False, help='run in simulation?')
+    parser.add_argument('--obj_mesh_dir',   dest='obj_mesh_dir',    action='store',    default='objects/blocks', help='directory containing 3D mesh files (.obj) of objects to be added to simulation')
+    parser.add_argument('--obj_model_dir',  dest='obj_model_dir',   action='store',    default='objects/models', help='directory containing 3D model files (.ttm) of objects to be added to simulation')
+    parser.add_argument('--num_obj',        dest='num_obj',         type=int,           action='store', default=10, help='number of objects to add to simulation')
+    parser.add_argument('--tcp_host_ip',    dest='tcp_host_ip',     action='store',     default='100.127.7.223', help='IP address to robot arm as TCP client (UR5)')
+    parser.add_argument('--tcp_port',       dest='tcp_port',        type=int, action='store', default=30002, help='port to robot arm as TCP client (UR5)')
+    parser.add_argument('--rtc_host_ip',    dest='rtc_host_ip',     action='store', default='100.127.7.223', help='IP address to robot arm as real-time client (UR5)')
+    parser.add_argument('--rtc_port',       dest='rtc_port',        type=int, action='store', default=30003, help='port to robot arm as real-time client (UR5)')
+    parser.add_argument('--random_seed',    dest='random_seed',     type=int, action='store', default=1234, help='random seed for simulation and neural net initialization')
+    parser.add_argument('--cpu',            dest='force_cpu',       action='store_true', default=False, help='force code to run in CPU mode')
 
     # ------------- Algorithm options -------------
-    parser.add_argument('--method', dest='method', action='store', default='reinforcement', help='set to \'reactive\' (supervised learning) or \'reinforcement\' (reinforcement learning ie Q-learning')
+    parser.add_argument('--method',     dest='method', action='store', default='reinforcement', help='set to \'reactive\' (supervised learning) or \'reinforcement\' (reinforcement learning ie Q-learning')
     parser.add_argument('--push_rewards', dest='push_rewards', action='store_true', default=False, help='use immediate rewards (from change detection) for pushing?')
     parser.add_argument('--future_reward_discount', dest='future_reward_discount', type=float, action='store', default=0.5)
     parser.add_argument('--experience_replay', dest='experience_replay', action='store_true', default=False, help='use prioritized experience replay?')

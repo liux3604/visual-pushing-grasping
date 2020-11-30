@@ -82,8 +82,8 @@ class Trainer(object):
 
         # Initialize lists to save execution info and RL variables
         self.executed_action_log = []
-        self.label_value_log = []
-        self.reward_value_log = []
+        self.expected_reward_log = []
+        self.current_one_time_reward_log = []
         self.predicted_value_log = []
         self.use_heuristic_log = []
         self.is_exploit_log = []
@@ -97,21 +97,21 @@ class Trainer(object):
         self.iteration = self.executed_action_log.shape[0] - 2
         self.executed_action_log = self.executed_action_log[0:self.iteration, :]
         self.executed_action_log = self.executed_action_log.tolist()
-        self.label_value_log = np.loadtxt(os.path.join(
+        self.expected_reward_log = np.loadtxt(os.path.join(
             transitions_directory, 'label-value.log.txt'), delimiter=' ')
-        self.label_value_log = self.label_value_log[0:self.iteration]
-        self.label_value_log.shape = (self.iteration, 1)
-        self.label_value_log = self.label_value_log.tolist()
+        self.expected_reward_log = self.expected_reward_log[0:self.iteration]
+        self.expected_reward_log.shape = (self.iteration, 1)
+        self.expected_reward_log = self.expected_reward_log.tolist()
         self.predicted_value_log = np.loadtxt(os.path.join(
             transitions_directory, 'predicted-value.log.txt'), delimiter=' ')
         self.predicted_value_log = self.predicted_value_log[0:self.iteration]
         self.predicted_value_log.shape = (self.iteration, 1)
         self.predicted_value_log = self.predicted_value_log.tolist()
-        self.reward_value_log = np.loadtxt(os.path.join(
+        self.current_one_time_reward_log = np.loadtxt(os.path.join(
             transitions_directory, 'reward-value.log.txt'), delimiter=' ')
-        self.reward_value_log = self.reward_value_log[0:self.iteration]
-        self.reward_value_log.shape = (self.iteration, 1)
-        self.reward_value_log = self.reward_value_log.tolist()
+        self.current_one_time_reward_log = self.current_one_time_reward_log[0:self.iteration]
+        self.current_one_time_reward_log.shape = (self.iteration, 1)
+        self.current_one_time_reward_log = self.current_one_time_reward_log.tolist()
         self.use_heuristic_log = np.loadtxt(os.path.join(
             transitions_directory, 'use-heuristic.log.txt'), delimiter=' ')
         self.use_heuristic_log = self.use_heuristic_log[0:self.iteration]
@@ -205,59 +205,55 @@ class Trainer(object):
 
         return push_predictions, grasp_predictions, state_feat
 
-    def get_label_value(self, primitive_action, push_success, grasp_success, change_detected, prev_push_predictions, prev_grasp_predictions, next_color_heightmap, next_depth_heightmap, prev_object_mass):
+    # Calculate the expected reward value and current one-time reward value.
+    def calculate_reward_values(self, 
+                                primitive_action, 
+                                grasp_success, 
+                                change_detected, 
+                                next_color_heightmap, 
+                                next_depth_heightmap, 
+                                prev_object_mass):
 
         if self.method == 'reactive':
-
             # Compute label value
-            label_value = 0
-            if primitive_action == 'push':
-                if not change_detected:
-                    label_value = 1
-            elif primitive_action == 'grasp':
-                if not grasp_success:
-                    label_value = 1
+            expected_reward = 0
+            if primitive_action == 'push' and not change_detected:
+                expected_reward = 1
+            elif primitive_action == 'grasp' and not grasp_success:
+                expected_reward = 1
 
-            print('Label value: %d' % (label_value))
-            return label_value, label_value
+            print('Label value: %d' % (expected_reward))
+            return expected_reward, expected_reward
 
         elif self.method == 'reinforcement':
 
             # Compute current reward
-            current_reward = 0
-            if primitive_action == 'push':
-                if change_detected:
-                    current_reward = 0.5
-            elif primitive_action == 'grasp':
-                if grasp_success:
-                    current_reward = 1.0
+            current_onetime_reward = 0
+            if primitive_action == 'push' and change_detected and self.push_rewards:
+                current_onetime_reward = 0.5
+            elif primitive_action == 'grasp' and grasp_success:
+                current_onetime_reward = 1.0
 
             # Compute future reward
-            if not change_detected and not grasp_success:
+            if not change_detected and not grasp_success: # speed up stepping out of dead loop of no grasp and no-change
                 future_reward = 0
             else:
-                next_push_predictions, next_grasp_predictions, next_state_feat = self.forward(
-                    next_color_heightmap, next_depth_heightmap, prev_object_mass, is_volatile=True)
+                next_push_predictions, next_grasp_predictions, _ = self.forward(color_heightmap=next_color_heightmap, 
+                                                                                depth_heightmap=next_depth_heightmap, 
+                                                                                object_mass=prev_object_mass, 
+                                                                                is_volatile=True,
+                                                                                specific_rotation=-1)
                 future_reward = max(np.max(next_push_predictions), np.max(next_grasp_predictions))
 
-                # # Experiment: use Q differences
-                # push_predictions_difference = next_push_predictions - prev_push_predictions
-                # grasp_predictions_difference = next_grasp_predictions - prev_grasp_predictions
-                # future_reward = max(np.max(push_predictions_difference), np.max(grasp_predictions_difference))
-
-            print('Current reward: %f' % (current_reward))
+            expected_reward = current_onetime_reward + self.future_reward_discount * future_reward
+            print('Current reward: %f' % (current_onetime_reward))
             print('Future reward: %f' % (future_reward))
-            if primitive_action == 'push' and not self.push_rewards:
-                expected_reward = self.future_reward_discount * future_reward
-                print('Expected reward: %f + %f x %f = %f' %(0.0, self.future_reward_discount, future_reward, expected_reward))
-            else:
-                expected_reward = current_reward + self.future_reward_discount * future_reward
-                print('Expected reward: %f + %f x %f = %f' % (current_reward, self.future_reward_discount, future_reward, expected_reward))
-            return expected_reward, current_reward
+            print('Expected reward: %f + %f x %f = %f' % (current_onetime_reward, self.future_reward_discount, future_reward, expected_reward))
+            return expected_reward, current_onetime_reward
 
     # Compute labels and backpropagate
 
-    def backprop(self, color_heightmap, depth_heightmap, primitive_action, best_pix_ind, label_value, prev_object_mass):
+    def backprop(self, color_heightmap, depth_heightmap, primitive_action, best_pix_ind, expected_reward, prev_object_mass):
 
         if self.method == 'reactive':
 
@@ -271,7 +267,7 @@ class Trainer(object):
             # blur_kernel = np.ones((5,5),np.float32)/25
             # action_area = cv2.filter2D(action_area, -1, blur_kernel)
             tmp_label = np.zeros((224, 224)) + fill_value
-            tmp_label[action_area > 0] = label_value
+            tmp_label[action_area > 0] = expected_reward
             label[0, 48:(320-48), 48:(320-48)] = tmp_label
 
             # Compute loss and backward pass
@@ -333,7 +329,7 @@ class Trainer(object):
             # blur_kernel = np.ones((5,5),np.float32)/25
             # action_area = cv2.filter2D(action_area, -1, blur_kernel)
             tmp_label = np.zeros((224, 224))
-            tmp_label[action_area > 0] = label_value
+            tmp_label[action_area > 0] = expected_reward
             label[0, 48:(320-48), 48:(320-48)] = tmp_label
 
             # Compute label mask
