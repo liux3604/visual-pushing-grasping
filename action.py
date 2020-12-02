@@ -2,6 +2,8 @@ import threading
 import shared
 import numpy as np
 import cv2
+import utils_gp_sim as utils_gp
+
 class Process_Actions(threading.Thread):
     def __init__(self, args, trainer, logger, robot):
         threading.Thread.__init__(self)
@@ -19,7 +21,7 @@ class Process_Actions(threading.Thread):
             best_grasp_conf = np.max(shared.grasp_predictions)
             print('Primitive confidence scores: %f (push), %f (grasp)' %(best_push_conf, best_grasp_conf))
             shared.primitive_action = 'grasp'
-            explore_actions = False
+            explore_actions = np.random.uniform() < self.explore_prob
             if not self.args.grasp_only:
                 if self.args.is_testing and self.args.method == 'reactive':
                     if best_push_conf > 2*best_grasp_conf:
@@ -27,7 +29,6 @@ class Process_Actions(threading.Thread):
                 else:
                     if best_push_conf > best_grasp_conf:
                         shared.primitive_action = 'push'
-                explore_actions = np.random.uniform() < self.explore_prob
                 # Exploitation (do best action) vs exploration (do other action)
                 if explore_actions:
                     print('Strategy: explore (exploration probability: %f)' % (self.explore_prob))
@@ -62,6 +63,14 @@ class Process_Actions(threading.Thread):
                 elif shared.primitive_action == 'grasp':
                     shared.best_pix_ind = np.unravel_index(np.argmax(shared.grasp_predictions), shared.grasp_predictions.shape)
                     predicted_value = np.max(shared.grasp_predictions)
+
+                # if explore_actions:
+                    # shared.best_pix_ind = ( np.random.randint(shared.grasp_predictions.shape[0]), 
+                    #                        np.random.randint(shared.grasp_predictions.shape[1]), 
+                    #                        np.random.randint(shared.grasp_predictions.shape[2]))
+                shared.best_pix_ind = (np.random.randint(shared.grasp_predictions.shape[0]), shared.best_pix_ind[1], shared.best_pix_ind[2])# only grasp rotation
+                print('Strategy: explore to determine best_pix_ind (exploration probability: %f)' % (self.explore_prob))
+
             self.trainer.use_heuristic_log.append([1 if use_heuristic else 0])
             self.logger.write_to_log('use-heuristic', self.trainer.use_heuristic_log)
 
@@ -100,12 +109,21 @@ class Process_Actions(threading.Thread):
 
             # Visualize executed primitive, and affordances
             if self.args.save_visualizations:
-                push_pred_vis = self.trainer.get_prediction_vis(shared.push_predictions, shared.color_heightmap, shared.best_pix_ind)
-                self.logger.save_visualizations(self.trainer.iteration, push_pred_vis, 'push')
-                cv2.imwrite('visualization.push.png', push_pred_vis)
-                grasp_pred_vis = self.trainer.get_prediction_vis(shared.grasp_predictions, shared.color_heightmap, shared.best_pix_ind)
+                grasp_pred_vis = utils_gp.get_grasp_vis(predictions=shared.grasp_predictions,
+                                        color_heightmap=shared.color_heightmap,
+                                        action_rot = shared.best_pix_ind[0],
+                                        action_position = shared.best_pix_ind[1:],
+                                        num_rotations=16)
                 self.logger.save_visualizations(self.trainer.iteration, grasp_pred_vis, 'grasp')
                 cv2.imwrite('visualization.grasp.png', grasp_pred_vis)
+
+                push_pred_vis = utils_gp.get_grasp_vis(predictions=shared.grasp_predictions,
+                                        color_heightmap=shared.color_heightmap,
+                                        action_rot = shared.best_pix_ind[0],
+                                        action_position = shared.best_pix_ind[1:],
+                                        num_rotations=16)
+                self.logger.save_visualizations(self.trainer.iteration, push_pred_vis, 'push')
+                cv2.imwrite('visualization.push.png', push_pred_vis)
 
             # Initialize variables that influence reward
             shared.push_success = False
@@ -117,7 +135,7 @@ class Process_Actions(threading.Thread):
                 print('Push: %r' %(shared.push_success))
             elif shared.primitive_action == 'grasp':
                 # Avoid collision with floor
-                primitive_position[2] = max(primitive_position[2] - 0.02, self.args.workspace_limits[2][0] + 0.015)
+                primitive_position[2] = max(primitive_position[2] - 0.02, self.args.workspace_limits[2][0] + 0.003)
                 shared.grasp_success, return_obj_handle, simulation_fail= self.robot.grasp( position=primitive_position, 
                                                                                             rot_angle=best_rotation_angle,
                                                                                             place_motion=False)

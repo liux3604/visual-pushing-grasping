@@ -15,7 +15,8 @@ from torch.autograd import Variable
 from Robot_sim import Robot
 from trainer import Trainer
 from logger import Logger
-import Utils_sim as utils
+# import utils_sim as utils
+import utils_gp_sim as utils_gp
 from action import Process_Actions
 import shared
 import copy
@@ -31,13 +32,13 @@ def main(args):
     num_obj = args.num_obj if is_sim else None
     # IP and port to robot arm as TCP client (UR5)
     tcp_host_ip = args.tcp_host_ip if not is_sim else None
-    tcp_port = args.tcp_port if not is_sim else None
+    tcp_port = args.tcp_port if not is_s-im else None
     # IP and port to robot arm as real-time client (UR5)
     rtc_host_ip = args.rtc_host_ip if not is_sim else None
     rtc_port = args.rtc_port if not is_sim else None
     if is_sim:
         # Cols: min max, Rows: x y z (workspace limits in robot coordinates)
-        args.workspace_limits = np.asarray([[0.2, 0.7], [-0.25, 0.25], [0.0002, 0.2]])
+        args.workspace_limits = np.asarray([[0.2,, 0.7], [-0.25, 0.25], [0.0002, 0.2]])
         '''
         np.asarray([[-0.724, -0.276], [-0.224, 0.224], [-0.0001, 0.4]])
         '''
@@ -116,8 +117,15 @@ def main(args):
     while True:
         print('\n%s iteration: %d' %('Testing' if is_testing else 'Training', trainer.iteration))
         iteration_time_0 = time.time()
-        
-        take_snapshot(robot, args)
+
+        # take snapshot
+        color_img, depth_img, shared.color_heightmap, shared.valid_depth_heightmap = utils_gp.get_heightmap(
+                                                                                    robot=robot,
+                                                                                    heightmap_resolution=args.heightmap_resolution,
+                                                                                    workspace_limits=args.workspace_limits)
+        # Save RGB-D images and RGB-D heightmaps
+        logger.save_images(trainer.iteration, color_img, depth_img, '0')
+        logger.save_heightmaps(trainer.iteration, shared.color_heightmap, shared.valid_depth_heightmap, '0')
 
         # Making a deep copy for the cases of table_empty_flag=True
         color_heightmap_training = copy.deepcopy(shared.color_heightmap)
@@ -131,7 +139,15 @@ def main(args):
             robot.stop_sim()
             robot.restart_sim()
             shared.no_change_count = [0, 0]
-            take_snapshot(robot, args)
+            # take_snapshot(robot, args)
+            # take snapshot
+            color_img, depth_img, shared.color_heightmap, shared.valid_depth_heightmap = utils_gp.get_heightmap(
+                                                                                    robot=robot,
+                                                                                    heightmap_resolution=args.heightmap_resolution,
+                                                                                    workspace_limits=args.workspace_limits)
+            # Save RGB-D images and RGB-D heightmaps
+            logger.save_images(trainer.iteration, color_img, depth_img, '0')
+            logger.save_heightmaps(trainer.iteration, shared.color_heightmap, shared.valid_depth_heightmap, '0')
 
         # Reset simulation or pause real-world training if table is empty
         table_empty_flag = False
@@ -143,7 +159,15 @@ def main(args):
                 robot.restart_sim()
             else:
                 robot.restart_real()
-            take_snapshot(robot, args)
+            # take_snapshot(robot, args)
+                        # take snapshot
+            color_img, depth_img, shared.color_heightmap, shared.valid_depth_heightmap = utils_gp.get_heightmap(
+                                                                                    robot=robot,
+                                                                                    heightmap_resolution=args.heightmap_resolution,
+                                                                                    workspace_limits=args.workspace_limits)
+            # Save RGB-D images and RGB-D heightmaps
+            logger.save_images(trainer.iteration, color_img, depth_img, '0')
+            logger.save_heightmaps(trainer.iteration, shared.color_heightmap, shared.valid_depth_heightmap, '0')
 
         if not exit_called:
             # Run forward pass with network to get affordances
@@ -305,7 +329,7 @@ def take_snapshot(robot, args):
     depth_img = depth_img * robot.cam_depth_scale
 
     # Get heightmap from RGB-D image (by re-projecting 3D point cloud)
-    shared.color_heightmap, shared.depth_heightmap = utils.get_heightmap(
+    shared.color_heightmap, shared.depth_heightmap = utils_gp.get_heightmap(
                                                     color_img=color_img,
                                                     depth_img=depth_img,
                                                     cam_intrinsics=robot.cam_intrinsics,
@@ -367,7 +391,7 @@ def isTableEmpty(args):
 
     if args.is_sim and total_num_pixels < empty_threshold:
         print('Warning: Camera detects not enough objects in view (value: %d)!.' % (total_num_pixels))
-    
+        table_isEmpty = True
     if not args.is_sim and total_num_pixels < empty_threshold:
         print('Not enough stuff on the table (value: %d)! Flipping over bin of objects...' % (total_num_pixels))
         # time.sleep(30)

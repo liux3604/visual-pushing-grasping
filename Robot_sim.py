@@ -7,7 +7,7 @@ import os
 from os import listdir
 from os.path import isfile, join
 import numpy as np
-import Utils_sim as utils
+import utils_sim as utils
 from simulation import vrep
 import shared
 
@@ -21,8 +21,7 @@ class Robot(object):
                  is_eval=False):
         self.workspace_limits = np.asarray(workspace_limits)
         self.workspace_center = np.asarray([(workspace_limits[0][1] + workspace_limits[0][0]) / 2,
-                                            (workspace_limits[1][1] +
-                                             workspace_limits[1][0]) / 2,
+                                            (workspace_limits[1][1] + workspace_limits[1][0]) / 2,
                                             0.1])
         if not is_insert_task:
             self.obj_target_home_pos = self.workspace_center
@@ -83,9 +82,9 @@ class Robot(object):
         self.rotate_gripper_z(0.)
 
     #  >>>>>  Scene Functions
-    def setup_sim_camera(self, resolution_x=1120., resolution_y=1120.): #1024*1024
+    def setup_sim_camera(self, resolution_x=1024., resolution_y=1024.): #1024*1024 1120
         # Get handle to camera
-        perspectiveAngle = np.deg2rad(54.70)
+        perspectiveAngle = np.deg2rad(33.0)
         self.cam_intrinsics = np.asarray([[resolution_x / (2 * np.tan(perspectiveAngle / 2)), 0, resolution_x/2],
                                           [0, resolution_y /
                                               (2 * np.tan(perspectiveAngle / 2)), resolution_y/2],
@@ -558,7 +557,8 @@ class Robot(object):
         # print('Executing: grasp at (%f, %f, %f)' % (position[0],
         #                                             position[1],
         #                                             position[2]))
-        tool_rotation_angle = np.deg2rad(rot_angle)
+        # tool_rotation_angle = np.deg2rad(rot_angle)
+        tool_rotation_angle = rot_angle # already radian
         # print('Gripper Rot Angle: ', rot_angle)
 
         # Avoid collision with floor

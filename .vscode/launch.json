@@ -23,7 +23,8 @@
                 "--grasp_only",
                 "--load_snapshot",
                 "--snapshot_file",
-                "downloads/hammer_1kg.pth"
+                //"downloads/hammer_1kg.pth" 
+                "downloads/hammer_2kg_newcodebase_3700.pth"
             ]
         }
     ]
