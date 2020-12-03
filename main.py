@@ -32,13 +32,13 @@ def main(args):
     num_obj = args.num_obj if is_sim else None
     # IP and port to robot arm as TCP client (UR5)
     tcp_host_ip = args.tcp_host_ip if not is_sim else None
-    tcp_port = args.tcp_port if not is_s-im else None
+    tcp_port = args.tcp_port if not is_sim else None
     # IP and port to robot arm as real-time client (UR5)
     rtc_host_ip = args.rtc_host_ip if not is_sim else None
     rtc_port = args.rtc_port if not is_sim else None
     if is_sim:
         # Cols: min max, Rows: x y z (workspace limits in robot coordinates)
-        args.workspace_limits = np.asarray([[0.2,, 0.7], [-0.25, 0.25], [0.0002, 0.2]])
+        args.workspace_limits = np.asarray([[0.2, 0.7], [-0.25, 0.25], [0.0002, 0.2]])
         '''
         np.asarray([[-0.724, -0.276], [-0.224, 0.224], [-0.0001, 0.4]])
         '''

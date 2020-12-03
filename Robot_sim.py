@@ -504,14 +504,27 @@ class Robot(object):
     def _rotate_gripper_z(self, target_angle, num_step=None):
         _, current_angle = vrep.simxGetObjectOrientation(self.sim_client, self.UR5_target_handle, -1,
                                                          vrep.simx_opmode_blocking)
+        # comments:
         # if target_angle > np.pi:
         #     target_angle -= np.pi
         # if target_angle < -np.pi:
         #     target_angle += np.pi
-        if target_angle > np.pi + 0.2:
+
+        # original:
+        # if target_angle > np.pi + 0.2:
+        #     target_angle -= 2*np.pi
+        # if target_angle < -np.pi - 0.2:
+        #     target_angle += 2*np.pi
+
+        if current_angle[2] > np.pi:
+            current_angle[2] -= 2*np.pi
+        if current_angle[2] < -np.pi:
+            current_angle[2] += 2*np.pi
+        while target_angle > np.pi:
             target_angle -= 2*np.pi
-        if target_angle < -np.pi - 0.2:
+        while target_angle < -np.pi:
             target_angle += 2*np.pi
+        
         ori_direction = np.asarray([0.,
                                     0.,
                                     target_angle - current_angle[2]])
